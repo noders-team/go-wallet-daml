@@ -1,14 +1,19 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"sort"
 )
 
 const (
-	CantonHashPurposeTopology = 1
+	CantonHashPurposePublicKeyFingerprint   = 12
+	CantonHashPurposePreparedTransaction    = 48
+	CantonHashPurposeMultiTopologyTxHashes  = 55
 )
 
 func ComputeSHA256CantonHash(purpose int, data []byte) ([]byte, error) {
@@ -25,21 +30,35 @@ func ComputeSHA256CantonHash(purpose int, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to write data to hash: %w", err)
 	}
 
-	return h.Sum(nil), nil
+	hash := h.Sum(nil)
+
+	multiprefix := []byte{0x12, 0x20}
+	fullHash := append(multiprefix, hash...)
+
+	return fullHash, nil
 }
 
 func ComputeMultiHashForTopology(hashes [][]byte) ([]byte, error) {
-	h := sha256.New()
+	sortedHashes := make([][]byte, len(hashes))
+	copy(sortedHashes, hashes)
+	sort.Slice(sortedHashes, func(i, j int) bool {
+		return hex.EncodeToString(sortedHashes[i]) < hex.EncodeToString(sortedHashes[j])
+	})
 
-	for _, hash := range hashes {
-		if _, err := h.Write(hash); err != nil {
-			return nil, fmt.Errorf("failed to write hash to multi-hash: %w", err)
-		}
+	numHashes := make([]byte, 4)
+	binary.BigEndian.PutUint32(numHashes, uint32(len(sortedHashes)))
+
+	var buf bytes.Buffer
+	buf.Write(numHashes)
+
+	for _, h := range sortedHashes {
+		lengthBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(lengthBytes, uint32(len(h)))
+		buf.Write(lengthBytes)
+		buf.Write(h)
 	}
 
-	combinedHash := h.Sum(nil)
-
-	return ComputeSHA256CantonHash(CantonHashPurposeTopology, combinedHash)
+	return ComputeSHA256CantonHash(CantonHashPurposeMultiTopologyTxHashes, buf.Bytes())
 }
 
 func HashPreparedTransaction(preparedTransactionBase64 string) (string, error) {
@@ -48,6 +67,10 @@ func HashPreparedTransaction(preparedTransactionBase64 string) (string, error) {
 		return "", fmt.Errorf("failed to decode prepared transaction: %w", err)
 	}
 
-	hash := sha256.Sum256(preparedBytes)
-	return base64.StdEncoding.EncodeToString(hash[:]), nil
+	hash, err := ComputeSHA256CantonHash(CantonHashPurposePreparedTransaction, preparedBytes)
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(hash), nil
 }

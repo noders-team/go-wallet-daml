@@ -3,7 +3,6 @@ package crypto
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 )
@@ -47,6 +46,10 @@ func CreateFingerprintFromKey(publicKeyBase64 string) (string, error) {
 		return "", fmt.Errorf("failed to decode public key: %w", err)
 	}
 
-	hash := sha256.Sum256(publicKeyBytes)
-	return base64.StdEncoding.EncodeToString(hash[:]), nil
+	hash, err := ComputeSHA256CantonHash(CantonHashPurposePublicKeyFingerprint, publicKeyBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute Canton hash: %w", err)
+	}
+
+	return base64.StdEncoding.EncodeToString(hash), nil
 }
