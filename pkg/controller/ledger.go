@@ -31,46 +31,128 @@ type LedgerController struct {
 	initErr        error
 }
 
-func NewLedgerController(userID string, grpcAddress string, httpBaseURL string, provider *auth.AuthTokenProvider, isAdmin bool) (*LedgerController, error) {
-	logger := log.Logger.With().
-		Str("component", "ledger-controller").
-		Str("userID", userID).
-		Bool("isAdmin", isAdmin).
-		Logger()
+type LedgerControllerBuilder struct {
+	userID         string
+	grpcAddress    string
+	httpBaseURL    string
+	provider       *auth.AuthTokenProvider
+	token          *string
+	isAdmin        bool
+	logger         *zerolog.Logger
+	tlsConfig      *client.TLSConfig
+	connectOnBuild bool
+}
 
-	tokenProviderFunc := func() (string, error) {
-		ctx := context.Background()
-		return provider.GetUserAccessToken(ctx)
+func NewLedgerControllerBuilder() *LedgerControllerBuilder {
+	return &LedgerControllerBuilder{
+		connectOnBuild: true, // default to connecting on build
+	}
+}
+
+func (b *LedgerControllerBuilder) WithUserID(userID string) *LedgerControllerBuilder {
+	b.userID = userID
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithGRPCAddress(grpcAddress string) *LedgerControllerBuilder {
+	b.grpcAddress = grpcAddress
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithHTTPBaseURL(httpBaseURL string) *LedgerControllerBuilder {
+	b.httpBaseURL = httpBaseURL
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithAuthProvider(provider *auth.AuthTokenProvider) *LedgerControllerBuilder {
+	b.provider = provider
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithToken(token string) *LedgerControllerBuilder {
+	b.token = &token
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithAdminMode(isAdmin bool) *LedgerControllerBuilder {
+	b.isAdmin = isAdmin
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithLogger(logger zerolog.Logger) *LedgerControllerBuilder {
+	b.logger = &logger
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithTLSConfig(tlsConfig *client.TLSConfig) *LedgerControllerBuilder {
+	b.tlsConfig = tlsConfig
+	return b
+}
+
+func (b *LedgerControllerBuilder) WithConnectOnBuild(connect bool) *LedgerControllerBuilder {
+	b.connectOnBuild = connect
+	return b
+}
+
+func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController, error) {
+	var logger zerolog.Logger
+	if b.logger != nil {
+		logger = *b.logger
+	} else {
+		logger = log.Logger.With().
+			Str("component", "ledger-controller").
+			Str("userID", b.userID).
+			Bool("isAdmin", b.isAdmin).
+			Logger()
 	}
 
 	damlConfig := &client.Config{
-		Address: grpcAddress,
-		TLS:     nil,
-		Auth: &client.AuthConfig{
-			TokenProvider: tokenProviderFunc,
-		},
+		Address: b.grpcAddress,
+		TLS:     b.tlsConfig,
+	}
+	if b.token != nil {
+		damlConfig.Auth = &client.AuthConfig{Token: *b.token}
+	} else {
+		tokenProviderFunc := func() (string, error) {
+			ctx := context.Background()
+			return b.provider.GetUserAccessToken(ctx)
+		}
+
+		damlConfig.Auth = &client.AuthConfig{TokenProvider: tokenProviderFunc}
 	}
 
 	damlCl := client.NewClient(damlConfig)
 
-	ledgerWrapper := wrapper.NewLedgerWrapper(httpBaseURL, provider)
+	ledgerWrapper := wrapper.NewLedgerWrapper(b.httpBaseURL, b.provider)
 
 	lc := &LedgerController{
-		userID:        userID,
-		isAdmin:       isAdmin,
+		userID:        b.userID,
+		isAdmin:       b.isAdmin,
 		ledgerWrapper: ledgerWrapper,
 		logger:        logger,
 	}
 
-	ctx := context.Background()
-	conn, err := damlCl.Connect(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to DAML ledger: %w", err)
+	if b.connectOnBuild {
+		conn, err := damlCl.Connect(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to DAML ledger: %w", err)
+		}
+		lc.damlClient = client.NewDamlBindingClient(&client.DamlClient{}, conn.GRPCConn())
 	}
 
-	lc.damlClient = client.NewDamlBindingClient(&client.DamlClient{}, conn.GRPCConn())
-
 	return lc, nil
+}
+
+// NewLedgerController creates a new LedgerController with default configuration
+// Deprecated: Use NewLedgerControllerBuilder for more flexibility
+func NewLedgerController(userID string, grpcAddress string, httpBaseURL string, provider *auth.AuthTokenProvider, isAdmin bool) (*LedgerController, error) {
+	return NewLedgerControllerBuilder().
+		WithUserID(userID).
+		WithGRPCAddress(grpcAddress).
+		WithHTTPBaseURL(httpBaseURL).
+		WithAuthProvider(provider).
+		WithAdminMode(isAdmin).
+		Build(context.Background())
 }
 
 func (l *LedgerController) AwaitInit(ctx context.Context) error {
@@ -142,13 +224,13 @@ func (l *LedgerController) PrepareSubmission(ctx context.Context, commands inter
 	}
 
 	req := &damlModel.PrepareSubmissionRequest{
-		UserID:           l.userID,
-		CommandID:        commandID,
-		Commands:         damlCommands,
-		ActAs:            []string{string(partyID)},
-		ReadAs:           []string{},
+		UserID:             l.userID,
+		CommandID:          commandID,
+		Commands:           damlCommands,
+		ActAs:              []string{string(partyID)},
+		ReadAs:             []string{},
 		DisclosedContracts: damlDisclosed,
-		SynchronizerID:   string(syncID),
+		SynchronizerID:     string(syncID),
 	}
 
 	resp, err := l.damlClient.InteractiveSubmissionService.PrepareSubmission(ctx, req)
