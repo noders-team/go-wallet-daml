@@ -287,6 +287,65 @@ func (l *LedgerController) ExecuteSubmission(ctx context.Context, prepared *mode
 	return commandID, nil
 }
 
+func (l *LedgerController) ExecuteSubmissionAndWaitFor(ctx context.Context, prepared *model.PrepareSubmissionResponse, signature string, publicKey string, submissionID string, timeoutMs int) (*model.CompletionValue, error) {
+	ledgerEnd, err := l.LedgerEnd(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	commandID, err := l.ExecuteSubmission(ctx, prepared, signature, publicKey, submissionID)
+	if err != nil {
+		return nil, err
+	}
+
+	return l.WaitForCompletion(ctx, ledgerEnd, timeoutMs, commandID)
+}
+
+func (l *LedgerController) SubmitCommand(ctx context.Context, commands interface{}, commandID string, disclosedContracts []*model.DisclosedContract) (string, error) {
+	partyID, err := l.GetPartyID()
+	if err != nil {
+		return "", err
+	}
+
+	if commandID == "" {
+		commandID = uuid.New().String()
+	}
+
+	var damlCommands []*damlModel.Command
+	switch cmds := commands.(type) {
+	case []*model.WrappedCommand:
+		for _, cmd := range cmds {
+			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
+		}
+	case *model.WrappedCommand:
+		damlCommands = append(damlCommands, convertWrappedCommand(cmds))
+	default:
+		return "", fmt.Errorf("unsupported command type")
+	}
+
+	req := &damlModel.SubmitRequest{
+		Commands: &damlModel.Commands{
+			UserID:     l.userID,
+			CommandID:  commandID,
+			Commands:   damlCommands,
+			ActAs:      []string{string(partyID)},
+			ReadAs:     []string{},
+		},
+	}
+
+	_, err = l.damlClient.CommandSubmission.Submit(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to submit command: %w", err)
+	}
+
+	l.logger.Info().
+		Str("commandID", commandID).
+		Str("partyID", string(partyID)).
+		Msg("Command submitted successfully")
+
+	return commandID, nil
+}
+
 func (l *LedgerController) PrepareSignAndExecuteTransaction(ctx context.Context, commands interface{}, privateKey string, commandID string, disclosedContracts []*model.DisclosedContract) (string, error) {
 	prepared, err := l.PrepareSubmission(ctx, commands, commandID, disclosedContracts)
 	if err != nil {
