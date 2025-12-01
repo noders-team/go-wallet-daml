@@ -10,19 +10,21 @@ import (
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
+	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
 type ValidatorController struct {
-	damlClient     *client.DamlBindingClient
-	userID         string
-	partyID        atomic.Value
-	synchronizerID atomic.Value
-	logger         zerolog.Logger
+	damlClient      *client.DamlBindingClient
+	scanProxyClient *wrapper.ScanProxyClient
+	userID          string
+	partyID         atomic.Value
+	synchronizerID  atomic.Value
+	logger          zerolog.Logger
 }
 
-func NewValidatorController(userID string, grpcAddress string, provider *auth.AuthTokenProvider) (*ValidatorController, error) {
+func NewValidatorController(userID string, grpcAddress string, scanProxyBaseURL string, provider *auth.AuthTokenProvider) (*ValidatorController, error) {
 	logger := log.Logger.With().
 		Str("component", "validator-controller").
 		Str("userID", userID).
@@ -49,10 +51,13 @@ func NewValidatorController(userID string, grpcAddress string, provider *auth.Au
 		return nil, fmt.Errorf("failed to connect to DAML ledger: %w", err)
 	}
 
+	scanProxyClient := wrapper.NewScanProxyClient(scanProxyBaseURL, provider, false)
+
 	return &ValidatorController{
-		damlClient: client.NewDamlBindingClient(&client.DamlClient{}, conn.GRPCConn()),
-		userID:     userID,
-		logger:     logger,
+		damlClient:      client.NewDamlBindingClient(&client.DamlClient{}, conn.GRPCConn()),
+		scanProxyClient: scanProxyClient,
+		userID:          userID,
+		logger:          logger,
 	}, nil
 }
 
@@ -131,177 +136,84 @@ func (v *ValidatorController) GetValidatorUser(ctx context.Context) (model.Party
 }
 
 func (v *ValidatorController) GetTransferPreApprovalByParty(ctx context.Context, receiverID model.PartyID) (*model.TransferPreapproval, error) {
-	partyID, err := v.GetPartyID()
+	contract, err := v.scanProxyClient.GetTransferPreApprovalByParty(ctx, receiverID)
 	if err != nil {
 		return nil, err
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(partyID): {
-				Inclusive: &damlModel.InclusiveFilters{
-					TemplateFilters: []*damlModel.TemplateFilter{
-						{
-							TemplateID:              "#splice-wallet:Splice.Wallet.TransferPreapproval:TransferPreapproval",
-							IncludeCreatedEventBlob: false,
-						},
-					},
-				},
-			},
-		},
+	if contract == nil {
+		return nil, nil
 	}
 
-	req := &damlModel.GetActiveContractsRequest{
-		Filter: filter,
+	preapproval := &model.TransferPreapproval{
+		ReceiverID: receiverID,
 	}
 
-	stream, errChan := v.damlClient.StateService.GetActiveContracts(ctx, req)
+	if dso, ok := contract.Payload["expectedDso"].(string); ok {
+		preapproval.DSO = model.PartyID(dso)
+	}
 
-	for {
-		select {
-		case resp, ok := <-stream:
-			if !ok {
-				return nil, fmt.Errorf("transfer preapproval not found for receiver %s", receiverID)
-			}
-			for _, contract := range resp.ActiveContracts {
-				args, ok := contract.CreateArguments.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if receiver, ok := args["receiver"].(string); ok && receiver == string(receiverID) {
-					preapproval := &model.TransferPreapproval{
-						ReceiverID: receiverID,
-					}
-					if dso, ok := args["expectedDso"].(string); ok {
-						preapproval.DSO = model.PartyID(dso)
-					}
-					return preapproval, nil
-				}
-			}
-		case err := <-errChan:
-			if err != nil {
-				return nil, fmt.Errorf("failed to get transfer preapproval: %w", err)
-			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	if expiresAtStr, ok := contract.Payload["expiresAt"].(string); ok {
+		if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
+			preapproval.ExpiresAt = expiresAt
 		}
 	}
+
+	return preapproval, nil
 }
 
 func (v *ValidatorController) GetOpenMiningRounds(ctx context.Context) ([]*model.OpenMiningRound, error) {
-	partyID, err := v.GetPartyID()
+	contracts, err := v.scanProxyClient.GetOpenMiningRounds(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(partyID): {
-				Inclusive: &damlModel.InclusiveFilters{
-					TemplateFilters: []*damlModel.TemplateFilter{
-						{
-							TemplateID:              "#splice-amulet:Splice.Round:OpenMiningRound",
-							IncludeCreatedEventBlob: false,
-						},
-					},
-				},
-			},
-		},
-	}
+	rounds := make([]*model.OpenMiningRound, 0, len(contracts))
 
-	req := &damlModel.GetActiveContractsRequest{
-		Filter: filter,
-	}
+	for _, contract := range contracts {
+		round := &model.OpenMiningRound{}
 
-	stream, errChan := v.damlClient.StateService.GetActiveContracts(ctx, req)
-
-	var rounds []*model.OpenMiningRound
-
-	for {
-		select {
-		case resp, ok := <-stream:
-			if !ok {
-				return rounds, nil
+		if roundID, ok := contract.Payload["round"].(map[string]interface{}); ok {
+			if number, ok := roundID["number"].(string); ok {
+				round.RoundID = number
 			}
-			for _, contract := range resp.ActiveContracts {
-				args, ok := contract.CreateArguments.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				round := &model.OpenMiningRound{}
-				if roundID, ok := args["roundId"].(string); ok {
-					round.RoundID = roundID
-				}
-				if startTime, ok := args["startTime"].(time.Time); ok {
-					round.StartTime = startTime
-				}
-				if endTime, ok := args["endTime"].(time.Time); ok {
-					round.EndTime = endTime
-				}
-				rounds = append(rounds, round)
-			}
-		case err := <-errChan:
-			if err != nil {
-				return nil, fmt.Errorf("failed to get open mining rounds: %w", err)
-			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
 		}
+
+		if opensAtStr, ok := contract.Payload["opensAt"].(string); ok {
+			if opensAt, err := time.Parse(time.RFC3339, opensAtStr); err == nil {
+				round.StartTime = opensAt
+			}
+		}
+
+		if targetClosesAtStr, ok := contract.Payload["targetClosesAt"].(string); ok {
+			if targetClosesAt, err := time.Parse(time.RFC3339, targetClosesAtStr); err == nil {
+				round.EndTime = targetClosesAt
+			}
+		}
+
+		rounds = append(rounds, round)
 	}
+
+	return rounds, nil
 }
 
 func (v *ValidatorController) GetAmuletRules(ctx context.Context) (*model.AmuletRules, error) {
-	partyID, err := v.GetPartyID()
+	contract, err := v.scanProxyClient.GetAmuletRules(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(partyID): {
-				Inclusive: &damlModel.InclusiveFilters{
-					TemplateFilters: []*damlModel.TemplateFilter{
-						{
-							TemplateID:              "#splice-amulet:Splice.AmuletRules:AmuletRules",
-							IncludeCreatedEventBlob: false,
-						},
-					},
-				},
-			},
-		},
+	if contract == nil {
+		return nil, fmt.Errorf("amulet rules not found")
 	}
 
-	req := &damlModel.GetActiveContractsRequest{
-		Filter: filter,
+	rules := &model.AmuletRules{
+		Rules: contract.Payload,
 	}
 
-	stream, errChan := v.damlClient.StateService.GetActiveContracts(ctx, req)
-
-	for {
-		select {
-		case resp, ok := <-stream:
-			if !ok {
-				return nil, fmt.Errorf("amulet rules not found")
-			}
-			for _, contract := range resp.ActiveContracts {
-				args, ok := contract.CreateArguments.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				rules := &model.AmuletRules{
-					Rules: args,
-				}
-				if dso, ok := args["dso"].(string); ok {
-					rules.DSOParty = model.PartyID(dso)
-				}
-				return rules, nil
-			}
-		case err := <-errChan:
-			if err != nil {
-				return nil, fmt.Errorf("failed to get amulet rules: %w", err)
-			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	if dso, ok := contract.Payload["dso"].(string); ok {
+		rules.DSOParty = model.PartyID(dso)
 	}
+
+	return rules, nil
 }

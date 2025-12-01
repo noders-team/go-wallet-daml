@@ -49,6 +49,7 @@ func main() {
 			return controller.NewValidatorController(
 				userID,
 				"localhost:5003",
+				"http://localhost:5003",
 				provider,
 			)
 		},
