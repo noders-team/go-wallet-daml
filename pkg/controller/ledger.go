@@ -325,11 +325,11 @@ func (l *LedgerController) SubmitCommand(ctx context.Context, commands interface
 
 	req := &damlModel.SubmitRequest{
 		Commands: &damlModel.Commands{
-			UserID:     l.userID,
-			CommandID:  commandID,
-			Commands:   damlCommands,
-			ActAs:      []string{string(partyID)},
-			ReadAs:     []string{},
+			UserID:    l.userID,
+			CommandID: commandID,
+			Commands:  damlCommands,
+			ActAs:     []string{string(partyID)},
+			ReadAs:    []string{},
 		},
 	}
 
@@ -793,6 +793,167 @@ func convertExercisedEvent(evt *damlModel.ExercisedEvent) *model.ExercisedEvent 
 		ExerciseResult: evt.ExerciseResult,
 		PackageName:    evt.PackageName,
 	}
+}
+
+func (l *LedgerController) ListWallets(ctx context.Context) ([]model.PartyID, error) {
+	resp, err := l.damlClient.PartyMng.ListKnownParties(ctx, "", 1000, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list known parties: %w", err)
+	}
+
+	wallets := make([]model.PartyID, 0, len(resp.PartyDetails))
+	for _, party := range resp.PartyDetails {
+		wallets = append(wallets, model.PartyID(party.Party))
+	}
+
+	return wallets, nil
+}
+
+func (l *LedgerController) GetParticipantID(ctx context.Context) (string, error) {
+	participantID, err := l.damlClient.PartyMng.GetParticipantID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get participant ID: %w", err)
+	}
+
+	return participantID, nil
+}
+
+func (l *LedgerController) CreatePingCommand(partyID model.PartyID) *model.WrappedCommand {
+	return &model.WrappedCommand{
+		CreateCommand: &model.CreateCommand{
+			TemplateID: "#splice-wallet:Splice.Wallet:Ping",
+			CreateArguments: map[string]interface{}{
+				"party": string(partyID),
+			},
+		},
+	}
+}
+
+func (l *LedgerController) CreateDelegateProxyCommand(ctx context.Context, exchangeParty model.PartyID, treasuryParty model.PartyID) (*model.WrappedCommand, error) {
+	partyID, err := l.GetPartyID()
+	if err != nil {
+		return nil, err
+	}
+
+	return &model.WrappedCommand{
+		CreateCommand: &model.CreateCommand{
+			TemplateID: "#splice-wallet:Splice.Wallet:DelegateProxyProposal",
+			CreateArguments: map[string]interface{}{
+				"owner":    string(partyID),
+				"exchange": string(exchangeParty),
+				"treasury": string(treasuryParty),
+			},
+		},
+	}, nil
+}
+
+func (l *LedgerController) GrantRights(ctx context.Context, readAsRights []model.PartyID, actAsRights []model.PartyID) error {
+	rights := make([]*damlModel.Right, 0, len(readAsRights)+len(actAsRights))
+
+	for _, party := range readAsRights {
+		rights = append(rights, &damlModel.Right{
+			Type: damlModel.CanReadAs{Party: string(party)},
+		})
+	}
+
+	for _, party := range actAsRights {
+		rights = append(rights, &damlModel.Right{
+			Type: damlModel.CanActAs{Party: string(party)},
+		})
+	}
+
+	_, err := l.damlClient.UserMng.GrantUserRights(ctx, l.userID, "", rights)
+	if err != nil {
+		return fmt.Errorf("failed to grant user rights: %w", err)
+	}
+
+	l.logger.Info().
+		Str("userID", l.userID).
+		Int("readAsCount", len(readAsRights)).
+		Int("actAsCount", len(actAsRights)).
+		Msg("Granted user rights")
+
+	return nil
+}
+
+func (l *LedgerController) GrantMasterUserRights(ctx context.Context, userID string, canReadAsAnyParty bool, canExecuteAsAnyParty bool) error {
+	rights := make([]*damlModel.Right, 0)
+
+	if canReadAsAnyParty {
+		rights = append(rights, &damlModel.Right{
+			Type: damlModel.ParticipantAdmin{},
+		})
+	}
+
+	if canExecuteAsAnyParty {
+		rights = append(rights, &damlModel.Right{
+			Type: damlModel.ParticipantAdmin{},
+		})
+	}
+
+	_, err := l.damlClient.UserMng.GrantUserRights(ctx, userID, "", rights)
+	if err != nil {
+		return fmt.Errorf("failed to grant master user rights: %w", err)
+	}
+
+	l.logger.Info().
+		Str("userID", userID).
+		Bool("canReadAsAnyParty", canReadAsAnyParty).
+		Bool("canExecuteAsAnyParty", canExecuteAsAnyParty).
+		Msg("Granted master user rights")
+
+	return nil
+}
+
+func (l *LedgerController) CreateUser(ctx context.Context, userID string, primaryParty model.PartyID) error {
+	rights := []*damlModel.Right{
+		{Type: damlModel.CanActAs{Party: string(primaryParty)}},
+		{Type: damlModel.CanReadAs{Party: string(primaryParty)}},
+	}
+
+	user := &damlModel.User{
+		ID:           userID,
+		PrimaryParty: string(primaryParty),
+	}
+
+	_, err := l.damlClient.UserMng.CreateUser(ctx, user, rights)
+	if err != nil {
+		return fmt.Errorf("failed to create user: %w", err)
+	}
+
+	l.logger.Info().
+		Str("userID", userID).
+		Str("primaryParty", string(primaryParty)).
+		Msg("Created user")
+
+	return nil
+}
+
+func (l *LedgerController) UploadDar(ctx context.Context, darBytes []byte) error {
+	err := l.damlClient.PackageMng.UploadDarFile(ctx, darBytes, "")
+	if err != nil {
+		return fmt.Errorf("failed to upload DAR: %w", err)
+	}
+
+	l.logger.Info().Int("bytes", len(darBytes)).Msg("Uploaded DAR file")
+
+	return nil
+}
+
+func (l *LedgerController) IsPackageUploaded(ctx context.Context, packageID string) (bool, error) {
+	req := &damlModel.ListPackagesRequest{}
+	resp, err := l.damlClient.PackageService.ListPackages(ctx, req)
+	if err != nil {
+		return false, fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	for _, pkg := range resp.PackageIDs {
+		if pkg == packageID {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func convertWrappedCommand(cmd *model.WrappedCommand) *damlModel.Command {
