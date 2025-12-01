@@ -1,11 +1,11 @@
 package model
 
 type GenerateTransactionResponse struct {
-	PartyID                string
-	Namespace              string
-	PublicKeyFingerprint   string
-	MultiHash              string
-	TopologyTransactions   []string
+	PartyID              string
+	Namespace            string
+	PublicKeyFingerprint string
+	MultiHash            string
+	TopologyTransactions []string
 }
 
 type TopologyTransaction struct {

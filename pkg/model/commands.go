@@ -12,15 +12,15 @@ type CreateCommand struct {
 }
 
 type ExerciseCommand struct {
-	ContractID       string
-	TemplateID       string
-	Choice           string
-	ChoiceArguments  map[string]interface{}
+	ContractID      string
+	TemplateID      string
+	Choice          string
+	ChoiceArguments map[string]interface{}
 }
 
 type CreateAndExerciseCommand struct {
-	TemplateID       string
-	CreateArguments  map[string]interface{}
-	Choice           string
-	ChoiceArguments  map[string]interface{}
+	TemplateID      string
+	CreateArguments map[string]interface{}
+	Choice          string
+	ChoiceArguments map[string]interface{}
 }

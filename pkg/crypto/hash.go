@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	CantonHashPurposePublicKeyFingerprint   = 12
-	CantonHashPurposePreparedTransaction    = 48
-	CantonHashPurposeMultiTopologyTxHashes  = 55
+	CantonHashPurposePublicKeyFingerprint  = 12
+	CantonHashPurposePreparedTransaction   = 48
+	CantonHashPurposeMultiTopologyTxHashes = 55
 )
 
 func ComputeSHA256CantonHash(purpose int, data []byte) ([]byte, error) {

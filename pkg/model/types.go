@@ -163,18 +163,18 @@ type ArchivedEvent struct {
 }
 
 type ExercisedEvent struct {
-	Offset          int64
-	NodeID          int32
-	ContractID      string
-	TemplateID      string
-	InterfaceID     string
-	Choice          string
-	ChoiceArgument  interface{}
-	ActingParties   []string
-	Consuming       bool
-	WitnessParties  []string
-	ExerciseResult  interface{}
-	PackageName     string
+	Offset         int64
+	NodeID         int32
+	ContractID     string
+	TemplateID     string
+	InterfaceID    string
+	Choice         string
+	ChoiceArgument interface{}
+	ActingParties  []string
+	Consuming      bool
+	WitnessParties []string
+	ExerciseResult interface{}
+	PackageName    string
 }
 
 type TransactionFilter struct {
@@ -185,7 +185,7 @@ type Filters struct {
 	Inclusive *InclusiveFilters
 }
 
-type InclusiveFilters struct{
+type InclusiveFilters struct {
 	TemplateFilters  []*TemplateFilter
 	InterfaceFilters []*InterfaceFilter
 }

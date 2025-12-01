@@ -11,10 +11,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-type AuthFactory func() auth.AuthController
-type LedgerFactory func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error)
-type TokenStandardFactory func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error)
-type ValidatorFactory func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error)
+type (
+	AuthFactory          func() auth.AuthController
+	LedgerFactory        func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error)
+	TokenStandardFactory func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error)
+	ValidatorFactory     func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error)
+)
 
 type Config struct {
 	AuthFactory          AuthFactory
