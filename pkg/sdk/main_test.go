@@ -1,4 +1,4 @@
-package codegen_test
+package sdk_test
 
 import (
 	"context"
