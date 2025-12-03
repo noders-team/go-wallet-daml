@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -138,13 +139,42 @@ func getSynchronizerID(ctx context.Context, resource *dockertest.Resource) (stri
 }
 
 func uploadDARFiles(ctx context.Context) error {
-	darFiles := []string{
-		".dar/splice-amulet-current.dar",
-		".dar/splice-wallet-0.1.14.dar",
-		".dar/splice-wallet-payments-0.1.14.dar",
+	darFileNames := []string{
+		"splice-amulet-current.dar",
+		"splice-wallet-0.1.14.dar",
+		"splice-wallet-payments-0.1.14.dar",
 	}
 
-	for _, darPath := range darFiles {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+	log.Info().Msgf("Current working directory: %s", cwd)
+
+	possibleDarPaths := []string{
+		".dar",
+		"../../.dar",
+		filepath.Join(cwd, ".dar"),
+		filepath.Join(cwd, "../../.dar"),
+	}
+
+	var darBasePath string
+	for _, path := range possibleDarPaths {
+		absPath, _ := filepath.Abs(path)
+		if _, err := os.Stat(absPath); err == nil {
+			darBasePath = absPath
+			log.Info().Msgf("Found .dar directory at: %s", darBasePath)
+			break
+		}
+	}
+
+	if darBasePath == "" {
+		return fmt.Errorf(".dar directory not found in any of the expected locations")
+	}
+
+	for _, fileName := range darFileNames {
+		darPath := filepath.Join(darBasePath, fileName)
+
 		if _, err := os.Stat(darPath); os.IsNotExist(err) {
 			log.Warn().Str("path", darPath).Msg("DAR file not found, skipping")
 			continue
