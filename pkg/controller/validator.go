@@ -107,7 +107,8 @@ func (v *ValidatorController) GetValidatorUser(ctx context.Context) (model.Party
 	}
 
 	req := &damlModel.GetActiveContractsRequest{
-		Filter: filter,
+		Filter:      filter,
+		EventFormat: &damlModel.EventFormat{Verbose: true},
 	}
 
 	stream, errChan := v.damlClient.StateService.GetActiveContracts(ctx, req)

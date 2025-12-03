@@ -623,7 +623,8 @@ func (l *LedgerController) GetActiveContracts(ctx context.Context, filter *model
 	}
 
 	req := &damlModel.GetActiveContractsRequest{
-		Filter: damlFilter,
+		Filter:      damlFilter,
+		EventFormat: &damlModel.EventFormat{Verbose: true},
 	}
 
 	var activeContracts []*model.ActiveContract
