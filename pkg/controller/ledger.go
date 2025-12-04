@@ -637,19 +637,22 @@ func (l *LedgerController) GetActiveContracts(ctx context.Context, filter *model
 			if !ok {
 				return activeContracts, nil
 			}
-			for _, ac := range resp.ActiveContracts {
-				createArgs, _ := ac.CreateArguments.(map[string]interface{})
-				activeContracts = append(activeContracts, &model.ActiveContract{
-					ContractID:       ac.ContractID,
-					TemplateID:       ac.TemplateID,
-					CreateArguments:  createArgs,
-					Signatories:      ac.Signatories,
-					Observers:        ac.Observers,
-					CreatedAt:        ac.CreatedAt,
-					ContractKey:      ac.ContractKey,
-					WitnessParties:   ac.WitnessParties,
-					CreatedEventBlob: ac.CreatedEventBlob,
-				})
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					ac := entry.ActiveContract.CreatedEvent
+					createArgs, _ := ac.CreateArguments.(map[string]interface{})
+					activeContracts = append(activeContracts, &model.ActiveContract{
+						ContractID:       ac.ContractID,
+						TemplateID:       ac.TemplateID,
+						CreateArguments:  createArgs,
+						Signatories:      ac.Signatories,
+						Observers:        ac.Observers,
+						CreatedAt:        ac.CreatedAt,
+						ContractKey:      ac.ContractKey,
+						WitnessParties:   ac.WitnessParties,
+						CreatedEventBlob: ac.CreatedEventBlob,
+					})
+				}
 			}
 		case err := <-errChan:
 			if err != nil {

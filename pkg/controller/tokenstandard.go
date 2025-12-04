@@ -15,6 +15,21 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const (
+	ALLOCATION_FACTORY_INTERFACE_ID           = "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory"
+	ALLOCATION_INSTRUCTION_INTERFACE_ID       = "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationInstruction"
+	ALLOCATION_REQUEST_INTERFACE_ID           = "#splice-api-token-allocation-request-v1:Splice.Api.Token.AllocationRequestV1:AllocationRequest"
+	ALLOCATION_INTERFACE_ID                   = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
+	HOLDING_INTERFACE_ID                      = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
+	METADATA_INTERFACE_ID                     = "#splice-api-token-metadata-v1:Splice.Api.Token.MetadataV1:AnyContract"
+	TRANSFER_FACTORY_INTERFACE_ID             = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory"
+	TRANSFER_INSTRUCTION_INTERFACE_ID         = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction"
+	FEATURED_APP_DELEGATE_PROXY_INTERFACE_ID  = "#splice-util-featured-app-proxies:Splice.Util.FeaturedApp.DelegateProxy:DelegateProxy"
+	MERGE_DELEGATION_PROPOSAL_TEMPLATE_ID     = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:MergeDelegationProposal"
+	MERGE_DELEGATION_TEMPLATE_ID              = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:MergeDelegation"
+	MERGE_DELEGATION_BATCH_MERGE_UTILITY      = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:BatchMergeUtility"
+)
+
 type TokenStandardController struct {
 	damlClient                 *client.DamlBindingClient
 	userID                     string
@@ -194,24 +209,25 @@ func (t *TokenStandardController) GetBalance(ctx context.Context) (decimal.Decim
 		return decimal.Zero, err
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(partyID): {
-				Inclusive: &damlModel.InclusiveFilters{
-					TemplateFilters: []*damlModel.TemplateFilter{
-						{
-							TemplateID:              "#splice-amulet:Splice.Amulet:Amulet",
-							IncludeCreatedEventBlob: false,
-						},
+	filterByParty := map[string]*damlModel.Filters{
+		string(partyID): {
+			Inclusive: &damlModel.InclusiveFilters{
+				TemplateFilters: []*damlModel.TemplateFilter{
+					{
+						TemplateID:              "3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1:Splice.Amulet:Amulet",
+						IncludeCreatedEventBlob: false,
 					},
 				},
 			},
 		},
 	}
+	filter := &damlModel.TransactionFilter{
+		FiltersByParty: filterByParty,
+	}
 
 	req := &damlModel.GetActiveContractsRequest{
 		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true},
+		EventFormat: &damlModel.EventFormat{Verbose: true, FiltersByParty: filterByParty},
 	}
 
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
@@ -228,12 +244,15 @@ func (t *TokenStandardController) GetBalance(ctx context.Context) (decimal.Decim
 					Msg("Balance retrieved")
 				return balance, nil
 			}
-			for _, contract := range resp.ActiveContracts {
-				if amountVal, ok := contract.CreateArguments.(map[string]interface{})["amount"]; ok {
-					if amountStr, ok := amountVal.(string); ok {
-						amount, err := decimal.NewFromString(amountStr)
-						if err == nil {
-							balance = balance.Add(amount)
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					contract := entry.ActiveContract.CreatedEvent
+					if amountVal, ok := contract.CreateArguments.(map[string]interface{})["amount"]; ok {
+						if amountStr, ok := amountVal.(string); ok {
+							amount, err := decimal.NewFromString(amountStr)
+							if err == nil {
+								balance = balance.Add(amount)
+							}
 						}
 					}
 				}
@@ -254,24 +273,25 @@ func (t *TokenStandardController) ListContractsByInterface(ctx context.Context, 
 		return nil, err
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(partyID): {
-				Inclusive: &damlModel.InclusiveFilters{
-					InterfaceFilters: []*damlModel.InterfaceFilter{
-						{
-							InterfaceID:             interfaceID,
-							IncludeCreatedEventBlob: true,
-						},
+	filterByParty := map[string]*damlModel.Filters{
+		string(partyID): {
+			Inclusive: &damlModel.InclusiveFilters{
+				InterfaceFilters: []*damlModel.InterfaceFilter{
+					{
+						InterfaceID:             interfaceID,
+						IncludeCreatedEventBlob: true,
 					},
 				},
 			},
 		},
 	}
+	filter := &damlModel.TransactionFilter{
+		FiltersByParty: filterByParty,
+	}
 
 	req := &damlModel.GetActiveContractsRequest{
 		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true},
+		EventFormat: &damlModel.EventFormat{Verbose: true, FiltersByParty: filterByParty},
 	}
 
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
@@ -284,7 +304,11 @@ func (t *TokenStandardController) ListContractsByInterface(ctx context.Context, 
 			if !ok {
 				return contracts, nil
 			}
-			contracts = append(contracts, resp.ActiveContracts...)
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					contracts = append(contracts, entry.ActiveContract.CreatedEvent)
+				}
+			}
 		case err := <-errChan:
 			if err != nil {
 				return nil, fmt.Errorf("failed to list contracts by interface: %w", err)
@@ -345,53 +369,56 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 				}
 				return utxos, nil
 			}
-			for _, contract := range resp.ActiveContracts {
-				args, ok := contract.CreateArguments.(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				utxo := &HoldingUTXO{
-					ContractID:       contract.ContractID,
-					CreatedEventBlob: contract.CreatedEventBlob,
-				}
-
-				if amountVal, ok := args["amount"]; ok {
-					if amountStr, ok := amountVal.(string); ok {
-						utxo.Amount, _ = decimal.NewFromString(amountStr)
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					contract := entry.ActiveContract.CreatedEvent
+					args, ok := contract.CreateArguments.(map[string]interface{})
+					if !ok {
+						continue
 					}
-				}
 
-				if instrumentIDMap, ok := args["instrumentId"].(map[string]interface{}); ok {
-					if id, ok := instrumentIDMap["id"].(string); ok {
-						utxo.InstrumentID = id
+					utxo := &HoldingUTXO{
+						ContractID:       contract.ContractID,
+						CreatedEventBlob: contract.CreatedEventBlob,
 					}
-					if admin, ok := instrumentIDMap["admin"].(string); ok {
-						utxo.InstrumentAdmin = admin
+
+					if amountVal, ok := args["amount"]; ok {
+						if amountStr, ok := amountVal.(string); ok {
+							utxo.Amount, _ = decimal.NewFromString(amountStr)
+						}
 					}
-				}
 
-				if owner, ok := args["owner"].(string); ok {
-					utxo.Owner = owner
-				}
+					if instrumentIDMap, ok := args["instrumentId"].(map[string]interface{}); ok {
+						if id, ok := instrumentIDMap["id"].(string); ok {
+							utxo.InstrumentID = id
+						}
+						if admin, ok := instrumentIDMap["admin"].(string); ok {
+							utxo.InstrumentAdmin = admin
+						}
+					}
 
-				if lockVal, ok := args["lock"].(map[string]interface{}); ok {
-					utxo.Lock = lockVal
+					if owner, ok := args["owner"].(string); ok {
+						utxo.Owner = owner
+					}
 
-					if !includeLocked {
-						if expiresAtVal, ok := lockVal["expiresAt"]; ok {
-							if expiresAtStr, ok := expiresAtVal.(string); ok {
-								if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
-									if expiresAt.After(currentTime) {
-										continue
+					if lockVal, ok := args["lock"].(map[string]interface{}); ok {
+						utxo.Lock = lockVal
+
+						if !includeLocked {
+							if expiresAtVal, ok := lockVal["expiresAt"]; ok {
+								if expiresAtStr, ok := expiresAtVal.(string); ok {
+									if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
+										if expiresAt.After(currentTime) {
+											continue
+										}
 									}
 								}
 							}
 						}
 					}
-				}
 
-				utxos = append(utxos, utxo)
+					utxos = append(utxos, utxo)
+				}
 			}
 		case err := <-errChan:
 			if err != nil {
@@ -1500,8 +1527,10 @@ func (t *TokenStandardController) UseMergeDelegations(ctx context.Context, walle
 	var mergeDelegationCid string
 	select {
 	case resp := <-stream:
-		if len(resp.ActiveContracts) > 0 {
-			mergeDelegationCid = resp.ActiveContracts[0].ContractID
+		if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+			if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+				mergeDelegationCid = entry.ActiveContract.CreatedEvent.ContractID
+			}
 		}
 	case err := <-errChan:
 		return nil, err
@@ -1609,14 +1638,25 @@ func (t *TokenStandardController) LookupMergeDelegationProposal(ctx context.Cont
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
 
 	var contracts []*damlModel.CreatedEvent
-	select {
-	case resp := <-stream:
-		contracts = resp.ActiveContracts
-	case err := <-errChan:
-		return nil, err
+	for {
+		select {
+		case resp, ok := <-stream:
+			if !ok {
+				return contracts, nil
+			}
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					contracts = append(contracts, entry.ActiveContract.CreatedEvent)
+				}
+			}
+		case err := <-errChan:
+			if err != nil {
+				return nil, err
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-
-	return contracts, nil
 }
 
 func (t *TokenStandardController) ApproveMergeDelegationProposal(ctx context.Context, ownerParty model.PartyID) (*CreateTransferResult, error) {

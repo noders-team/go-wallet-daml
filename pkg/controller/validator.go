@@ -119,10 +119,13 @@ func (v *ValidatorController) GetValidatorUser(ctx context.Context) (model.Party
 			if !ok {
 				return "", fmt.Errorf("validator user not found")
 			}
-			for _, contract := range resp.ActiveContracts {
-				if validatorParty, ok := contract.CreateArguments.(map[string]interface{})["validator"]; ok {
-					if validatorPartyStr, ok := validatorParty.(string); ok {
-						return model.PartyID(validatorPartyStr), nil
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					contract := entry.ActiveContract.CreatedEvent
+					if validatorParty, ok := contract.CreateArguments.(map[string]interface{})["validator"]; ok {
+						if validatorPartyStr, ok := validatorParty.(string); ok {
+							return model.PartyID(validatorPartyStr), nil
+						}
 					}
 				}
 			}
