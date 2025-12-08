@@ -126,10 +126,12 @@ func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController,
 	ledgerWrapper := wrapper.NewLedgerWrapper(b.httpBaseURL, b.provider)
 
 	lc := &LedgerController{
-		userID:        b.userID,
-		isAdmin:       b.isAdmin,
-		ledgerWrapper: ledgerWrapper,
-		logger:        logger,
+		userID:         b.userID,
+		isAdmin:        b.isAdmin,
+		ledgerWrapper:  ledgerWrapper,
+		logger:         logger,
+		synchronizerID: atomic.Value{},
+		partyID:        atomic.Value{},
 	}
 
 	if b.connectOnBuild {
@@ -145,7 +147,10 @@ func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController,
 
 // NewLedgerController creates a new LedgerController with default configuration
 // Deprecated: Use NewLedgerControllerBuilder for more flexibility
-func NewLedgerController(userID string, grpcAddress string, httpBaseURL string, provider *auth.AuthTokenProvider, isAdmin bool) (*LedgerController, error) {
+func NewLedgerController(userID string,
+	grpcAddress string,
+	httpBaseURL string,
+	provider *auth.AuthTokenProvider, isAdmin bool) (*LedgerController, error) {
 	return NewLedgerControllerBuilder().
 		WithUserID(userID).
 		WithGRPCAddress(grpcAddress).

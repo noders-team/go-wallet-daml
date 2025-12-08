@@ -20,6 +20,7 @@ import (
 var (
 	cl              *client.DamlBindingClient
 	sandboxGrpcAddr string
+	sandboxHTTPAddr string
 	synchronizerID  string
 )
 
@@ -36,8 +37,9 @@ func TestMain(m *testing.M) {
 		log.Fatal().Err(err).Msg("Could not ping docker")
 	}
 
-	resDaml, grpcAddr := initDamlSandbox(ctx, dockerPool)
+	resDaml, grpcAddr, httpAddr := initDamlSandbox(ctx, dockerPool)
 	sandboxGrpcAddr = grpcAddr
+	sandboxHTTPAddr = httpAddr
 
 	builder := client.NewDamlClient("", grpcAddr)
 	if strings.HasSuffix(grpcAddr, ":443") {
@@ -50,7 +52,7 @@ func TestMain(m *testing.M) {
 		log.Fatal().Err(err).Msg("failed to build DAML client")
 	}
 
-	log.Info().Msg("Canton sandbox initialization complete, setting up test environment")
+	log.Info().Msg("canton sandbox initialization complete, setting up test environment")
 
 	testUser := "app-provider"
 	users, err := cl.UserMng.ListUsers(ctx)
@@ -71,7 +73,7 @@ func TestMain(m *testing.M) {
 		log.Info().Msgf("creating user %s", testUser)
 
 		log.Info().Msg("waiting for synchronizer connection before allocating party...")
-		time.Sleep(60 * time.Second)
+		time.Sleep(90 * time.Second)
 
 		partyDetails, err := cl.PartyMng.AllocateParty(ctx, "", nil, "")
 		if err != nil {
@@ -130,9 +132,6 @@ func TestMain(m *testing.M) {
 }
 
 func getSynchronizerID(ctx context.Context, resource *dockertest.Resource) (string, error) {
-	adminPort := resource.GetPort("6866/tcp")
-	log.Info().Msgf("Canton admin API available on port %s", adminPort)
-
 	synchronizerID := "sandbox::sequencer1"
 	log.Info().Msgf("Using synchronizer ID: %s (based on Canton config)", synchronizerID)
 	return synchronizerID, nil
@@ -196,61 +195,40 @@ func uploadDARFiles(ctx context.Context) error {
 	return nil
 }
 
-func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockertest.Resource, string) {
+func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockertest.Resource, string, string) {
 	ledgerAPIPort := "6865"
+	participantAdminPort := "6866"
+	sequencerPublicPort := "6867"
+	sequencerAdminPort := "6868"
+	mediatorAdminPort := "6869"
+	jsonAPIPort := "7575"
 
-	cantonConfig := `canton {
-  mediators {
-    mediator1 {
-      admin-api.port = 6869
-    }
-  }
-  sequencers {
-    sequencer1 {
-      admin-api.port = 6868
-      public-api.port = 6867
-      sequencer {
-        type = reference
-        config.storage.type = memory
-      }
-      storage.type = memory
-    }
-  }
-  participants {
-    sandbox {
-      storage.type = memory
-      admin-api.port = 6866
-      ledger-api {
-        address = "0.0.0.0"
-        port = 6865
-        user-management-service.enabled = true
-      }
-    }
-  }
-}
-`
-
-	tmpDir, err := os.MkdirTemp("", "canton-config-*")
-	if err != nil {
-		log.Fatal().Err(err).Msg("Could not create temp dir for Canton config")
+	cmdArgs := []string{
+		"daml",
+		"sandbox",
+		"--port", ledgerAPIPort,
+		"--admin-api-port", participantAdminPort,
+		"--json-api-port", jsonAPIPort,
+		"--sequencer-public-port", sequencerPublicPort,
+		"--sequencer-admin-port", sequencerAdminPort,
+		"--mediator-admin-port", mediatorAdminPort,
 	}
 
-	configPath := fmt.Sprintf("%s/canton.conf", tmpDir)
-	if err := os.WriteFile(configPath, []byte(cantonConfig), 0o644); err != nil {
-		log.Fatal().Err(err).Msg("Could not write Canton config")
-	}
+	log.Info().Msgf("Starting DAML sandbox with command: %v", cmdArgs)
 
 	resource, err := dockerPool.RunWithOptions(&dockertest.RunOptions{
 		Repository: "digitalasset/daml-sdk",
 		Tag:        "3.5.0-snapshot.20251106.0",
 		Platform:   "linux/amd64",
-		Cmd: []string{
-			"daml",
-			"sandbox",
-			"-c", "/canton/canton.conf",
+		Cmd:        cmdArgs,
+		ExposedPorts: []string{
+			ledgerAPIPort + "/tcp",
+			participantAdminPort + "/tcp",
+			sequencerPublicPort + "/tcp",
+			sequencerAdminPort + "/tcp",
+			mediatorAdminPort + "/tcp",
+			jsonAPIPort + "/tcp",
 		},
-		ExposedPorts: []string{ledgerAPIPort + "/tcp", "6866/tcp"},
-		Mounts:       []string{fmt.Sprintf("%s:/canton/canton.conf:ro", configPath)},
 	}, func(config *docker.HostConfig) {
 		config.AutoRemove = true
 		config.RestartPolicy = docker.RestartPolicy{
@@ -268,16 +246,27 @@ func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockert
 
 	log.Info().Msgf("DAML sandbox started, Ledger API (gRPC) on %s", grpcAddr)
 
-	if err := waitForPort(ctx, mappedLedgerPort, 2*time.Minute); err != nil {
+	if err := waitForPort(ctx, mappedLedgerPort, 1*time.Minute); err != nil {
 		log.Fatal().Err(err).Msgf("DAML sandbox Ledger API port %s not ready", mappedLedgerPort)
 	}
 
-	log.Info().Msg("Port is open, waiting for Canton to fully initialize gRPC...")
-	if err := waitForCantonGRPC(ctx, grpcAddr, 4*time.Minute); err != nil {
-		log.Fatal().Err(err).Msg("Canton gRPC services not ready")
+	if err = waitForCantonGRPC(ctx, grpcAddr, 2*time.Minute); err != nil {
+		log.Fatal().Err(err).Msgf("DAML sandbox gRPC port %s not ready", mappedLedgerPort)
 	}
 
-	return resource, grpcAddr
+	log.Info().Msg("Port is open, waiting for Canton to fully initialize gRPC...")
+	time.Sleep(120 * time.Second)
+
+	mappedJSONAPIPort := resource.GetPort(jsonAPIPort + "/tcp")
+	httpAddr := fmt.Sprintf("http://127.0.0.1:%s", mappedJSONAPIPort)
+	log.Info().Msgf("Canton HTTP JSON API on %s", httpAddr)
+
+	log.Info().Msg("Waiting for HTTP JSON API port to be ready...")
+	if err := waitForPort(ctx, mappedJSONAPIPort, 1*time.Minute); err != nil {
+		log.Warn().Err(err).Msgf("HTTP JSON API port %s not ready, continuing anyway", mappedJSONAPIPort)
+	}
+
+	return resource, grpcAddr, httpAddr
 }
 
 func waitForPort(ctx context.Context, port string, timeout time.Duration) error {
