@@ -37,7 +37,7 @@ func TestMain(m *testing.M) {
 		log.Fatal().Err(err).Msg("Could not ping docker")
 	}
 
-	resDaml, grpcAddr, httpAddr := initDamlSandbox(ctx, dockerPool)
+	resDaml, resJSONAPI, grpcAddr, httpAddr := initDamlSandbox(ctx, dockerPool)
 	sandboxGrpcAddr = grpcAddr
 	sandboxHTTPAddr = httpAddr
 
@@ -126,7 +126,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	purgeResources(dockerPool, resDaml)
+	purgeResources(dockerPool, resDaml, resJSONAPI)
 
 	os.Exit(code)
 }
@@ -195,40 +195,62 @@ func uploadDARFiles(ctx context.Context) error {
 	return nil
 }
 
-func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockertest.Resource, string, string) {
+func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockertest.Resource, *dockertest.Resource, string, string) {
 	ledgerAPIPort := "6865"
-	participantAdminPort := "6866"
-	sequencerPublicPort := "6867"
-	sequencerAdminPort := "6868"
-	mediatorAdminPort := "6869"
-	jsonAPIPort := "7575"
 
-	cmdArgs := []string{
-		"daml",
-		"sandbox",
-		"--port", ledgerAPIPort,
-		"--admin-api-port", participantAdminPort,
-		"--json-api-port", jsonAPIPort,
-		"--sequencer-public-port", sequencerPublicPort,
-		"--sequencer-admin-port", sequencerAdminPort,
-		"--mediator-admin-port", mediatorAdminPort,
+	cantonConfig := `canton {
+  mediators {
+    mediator1 {
+      admin-api.port = 6869
+    }
+  }
+  sequencers {
+    sequencer1 {
+      admin-api.port = 6868
+      public-api.port = 6867
+      sequencer {
+        type = reference
+        config.storage.type = memory
+      }
+      storage.type = memory
+    }
+  }
+  participants {
+    sandbox {
+      storage.type = memory
+      admin-api.port = 6866
+      ledger-api {
+        address = "0.0.0.0"
+        port = 6865
+        user-management-service.enabled = true
+      }
+    }
+  }
+}
+`
+
+	tmpDir, err := os.MkdirTemp("", "canton-config-*")
+	if err != nil {
+		log.Fatal().Err(err).Msg("Could not create temp dir for Canton config")
 	}
 
-	log.Info().Msgf("Starting DAML sandbox with command: %v", cmdArgs)
+	configPath := fmt.Sprintf("%s/canton.conf", tmpDir)
+	if err := os.WriteFile(configPath, []byte(cantonConfig), 0o644); err != nil {
+		log.Fatal().Err(err).Msg("Could not write Canton config")
+	}
 
 	resource, err := dockerPool.RunWithOptions(&dockertest.RunOptions{
 		Repository: "digitalasset/daml-sdk",
 		Tag:        "3.5.0-snapshot.20251106.0",
 		Platform:   "linux/amd64",
-		Cmd:        cmdArgs,
-		ExposedPorts: []string{
-			ledgerAPIPort + "/tcp",
-			participantAdminPort + "/tcp",
-			sequencerPublicPort + "/tcp",
-			sequencerAdminPort + "/tcp",
-			mediatorAdminPort + "/tcp",
-			jsonAPIPort + "/tcp",
+		Name:       "daml-sandbox",
+		Cmd: []string{
+			"daml",
+			"sandbox",
+			"-c", "/canton/canton.conf",
 		},
+		ExposedPorts: []string{ledgerAPIPort + "/tcp"},
+		Mounts:       []string{fmt.Sprintf("%s:/canton/canton.conf:ro", configPath)},
 	}, func(config *docker.HostConfig) {
 		config.AutoRemove = true
 		config.RestartPolicy = docker.RestartPolicy{
@@ -250,23 +272,70 @@ func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockert
 		log.Fatal().Err(err).Msgf("DAML sandbox Ledger API port %s not ready", mappedLedgerPort)
 	}
 
-	if err = waitForCantonGRPC(ctx, grpcAddr, 2*time.Minute); err != nil {
-		log.Fatal().Err(err).Msgf("DAML sandbox gRPC port %s not ready", mappedLedgerPort)
-	}
-
 	log.Info().Msg("Port is open, waiting for Canton to fully initialize gRPC...")
-	time.Sleep(120 * time.Second)
+	if err := waitForCantonGRPC(ctx, grpcAddr, 3*time.Minute); err != nil {
+		log.Fatal().Err(err).Msg("Canton gRPC services not ready")
+	}
+	log.Info().Msg("Canton gRPC services are ready, starting JSON API server...")
 
-	mappedJSONAPIPort := resource.GetPort(jsonAPIPort + "/tcp")
-	httpAddr := fmt.Sprintf("http://127.0.0.1:%s", mappedJSONAPIPort)
-	log.Info().Msgf("Canton HTTP JSON API on %s", httpAddr)
+	// run json api-server
+	cantonApiConfig := `{
+  server {
+    address = "0.0.0.0"
+    port = 7575
+  }
+  ledger-api {
+    address = "host.docker.internal"
+    port = ` + mappedLedgerPort + `
+  }
+}`
 
-	log.Info().Msg("Waiting for HTTP JSON API port to be ready...")
-	if err := waitForPort(ctx, mappedJSONAPIPort, 1*time.Minute); err != nil {
-		log.Warn().Err(err).Msgf("HTTP JSON API port %s not ready, continuing anyway", mappedJSONAPIPort)
+	jsonAPIConfigPath := fmt.Sprintf("%s/json-api.conf", tmpDir)
+	if err := os.WriteFile(jsonAPIConfigPath, []byte(cantonApiConfig), 0o644); err != nil {
+		log.Fatal().Err(err).Msg("Could not write JSON API config")
 	}
 
-	return resource, grpcAddr, httpAddr
+	jsonAPIPort := "7575"
+	jsonAPIResource, err := dockerPool.RunWithOptions(&dockertest.RunOptions{
+		Repository: "digitalasset/daml-sdk",
+		Tag:        "3.5.0-snapshot.20251106.0",
+		Platform:   "linux/amd64",
+		Name:       "daml-json-api",
+		Cmd: []string{
+			"daml",
+			"sandbox",
+			"--json-api-port",
+			jsonAPIPort,
+			"--config", "/json-api/json-api.conf",
+		},
+		ExposedPorts: []string{jsonAPIPort + "/tcp"},
+		Mounts:       []string{fmt.Sprintf("%s:/json-api/json-api.conf:ro", jsonAPIConfigPath)},
+	}, func(config *docker.HostConfig) {
+		config.AutoRemove = false
+		config.RestartPolicy = docker.RestartPolicy{
+			Name: "no",
+		}
+		config.ExtraHosts = []string{"host.docker.internal:host-gateway"}
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("could not start JSON API server")
+	}
+
+	jsonAPIResource.Expire(300)
+
+	mappedJSONAPIPort := jsonAPIResource.GetPort(jsonAPIPort + "/tcp")
+	httpAddr := fmt.Sprintf("http://127.0.0.1:%s", mappedJSONAPIPort)
+
+	log.Info().Msgf("JSON API server started on %s", httpAddr)
+
+	if err := waitForPort(ctx, mappedJSONAPIPort, 2*time.Minute); err != nil {
+		log.Fatal().Err(err).Msgf("JSON API server port %s not ready", mappedJSONAPIPort)
+	}
+
+	log.Info().Msg("JSON API server is ready")
+	time.Sleep(120 * time.Second) // Additional wait for JSON API to fully initialize
+
+	return resource, jsonAPIResource, grpcAddr, httpAddr
 }
 
 func waitForPort(ctx context.Context, port string, timeout time.Duration) error {

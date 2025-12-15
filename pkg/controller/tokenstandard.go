@@ -16,18 +16,18 @@ import (
 )
 
 const (
-	ALLOCATION_FACTORY_INTERFACE_ID           = "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory"
-	ALLOCATION_INSTRUCTION_INTERFACE_ID       = "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationInstruction"
-	ALLOCATION_REQUEST_INTERFACE_ID           = "#splice-api-token-allocation-request-v1:Splice.Api.Token.AllocationRequestV1:AllocationRequest"
-	ALLOCATION_INTERFACE_ID                   = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
-	HOLDING_INTERFACE_ID                      = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
-	METADATA_INTERFACE_ID                     = "#splice-api-token-metadata-v1:Splice.Api.Token.MetadataV1:AnyContract"
-	TRANSFER_FACTORY_INTERFACE_ID             = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory"
-	TRANSFER_INSTRUCTION_INTERFACE_ID         = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction"
-	FEATURED_APP_DELEGATE_PROXY_INTERFACE_ID  = "#splice-util-featured-app-proxies:Splice.Util.FeaturedApp.DelegateProxy:DelegateProxy"
-	MERGE_DELEGATION_PROPOSAL_TEMPLATE_ID     = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:MergeDelegationProposal"
-	MERGE_DELEGATION_TEMPLATE_ID              = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:MergeDelegation"
-	MERGE_DELEGATION_BATCH_MERGE_UTILITY      = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:BatchMergeUtility"
+	ALLOCATION_FACTORY_INTERFACE_ID          = "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory"
+	ALLOCATION_INSTRUCTION_INTERFACE_ID      = "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationInstruction"
+	ALLOCATION_REQUEST_INTERFACE_ID          = "#splice-api-token-allocation-request-v1:Splice.Api.Token.AllocationRequestV1:AllocationRequest"
+	ALLOCATION_INTERFACE_ID                  = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
+	HOLDING_INTERFACE_ID                     = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
+	METADATA_INTERFACE_ID                    = "#splice-api-token-metadata-v1:Splice.Api.Token.MetadataV1:AnyContract"
+	TRANSFER_FACTORY_INTERFACE_ID            = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory"
+	TRANSFER_INSTRUCTION_INTERFACE_ID        = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction"
+	FEATURED_APP_DELEGATE_PROXY_INTERFACE_ID = "#splice-util-featured-app-proxies:Splice.Util.FeaturedApp.DelegateProxy:DelegateProxy"
+	MERGE_DELEGATION_PROPOSAL_TEMPLATE_ID    = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:MergeDelegationProposal"
+	MERGE_DELEGATION_TEMPLATE_ID             = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:MergeDelegation"
+	MERGE_DELEGATION_BATCH_MERGE_UTILITY     = "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.MergeDelegation:BatchMergeUtility"
 )
 
 type TokenStandardController struct {
@@ -67,7 +67,7 @@ func NewTokenStandardController(userID string, grpcAddress string, provider *aut
 	}
 
 	return &TokenStandardController{
-		damlClient: client.NewDamlBindingClient(&client.DamlClient{}, conn.GRPCConn()),
+		damlClient: client.NewDamlBindingClient(&client.DamlClient{}, conn),
 		userID:     userID,
 		logger:     logger,
 	}, nil
@@ -221,13 +221,12 @@ func (t *TokenStandardController) GetBalance(ctx context.Context) (decimal.Decim
 			},
 		},
 	}
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: filterByParty,
-	}
 
 	req := &damlModel.GetActiveContractsRequest{
-		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true, FiltersByParty: filterByParty},
+		EventFormat: &damlModel.EventFormat{
+			Verbose:        true,
+			FiltersByParty: filterByParty,
+		},
 	}
 
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
@@ -285,13 +284,12 @@ func (t *TokenStandardController) ListContractsByInterface(ctx context.Context, 
 			},
 		},
 	}
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: filterByParty,
-	}
 
 	req := &damlModel.GetActiveContractsRequest{
-		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true, FiltersByParty: filterByParty},
+		EventFormat: &damlModel.EventFormat{
+			Verbose:        true,
+			FiltersByParty: filterByParty,
+		},
 	}
 
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
@@ -335,24 +333,22 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 		return nil, err
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(partyID): {
-				Inclusive: &damlModel.InclusiveFilters{
-					InterfaceFilters: []*damlModel.InterfaceFilter{
-						{
-							InterfaceID:             "Splice.Holding:Holding",
-							IncludeCreatedEventBlob: true,
+	req := &damlModel.GetActiveContractsRequest{
+		EventFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				string(partyID): {
+					Inclusive: &damlModel.InclusiveFilters{
+						InterfaceFilters: []*damlModel.InterfaceFilter{
+							{
+								InterfaceID:             "Splice.Holding:Holding",
+								IncludeCreatedEventBlob: true,
+							},
 						},
 					},
 				},
 			},
 		},
-	}
-
-	req := &damlModel.GetActiveContractsRequest{
-		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true},
 	}
 
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
@@ -1505,21 +1501,19 @@ func (t *TokenStandardController) UseMergeDelegations(ctx context.Context, walle
 		return nil, fmt.Errorf("utxos are less than 10, found %d", len(utxos))
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(walletParty): {
-				Inclusive: &damlModel.InclusiveFilters{
-					TemplateFilters: []*damlModel.TemplateFilter{
-						{TemplateID: "Splice.MergeDelegation:MergeDelegation"},
+	req := &damlModel.GetActiveContractsRequest{
+		EventFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				string(walletParty): {
+					Inclusive: &damlModel.InclusiveFilters{
+						TemplateFilters: []*damlModel.TemplateFilter{
+							{TemplateID: "Splice.MergeDelegation:MergeDelegation"},
+						},
 					},
 				},
 			},
 		},
-	}
-
-	req := &damlModel.GetActiveContractsRequest{
-		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true},
 	}
 
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
@@ -1618,21 +1612,19 @@ func (t *TokenStandardController) LookupMergeDelegationProposal(ctx context.Cont
 		}
 	}
 
-	filter := &damlModel.TransactionFilter{
-		FiltersByParty: map[string]*damlModel.Filters{
-			string(ownerParty): {
-				Inclusive: &damlModel.InclusiveFilters{
-					TemplateFilters: []*damlModel.TemplateFilter{
-						{TemplateID: "Splice.MergeDelegationProposal:MergeDelegationProposal"},
+	req := &damlModel.GetActiveContractsRequest{
+		EventFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				string(ownerParty): {
+					Inclusive: &damlModel.InclusiveFilters{
+						TemplateFilters: []*damlModel.TemplateFilter{
+							{TemplateID: "Splice.MergeDelegationProposal:MergeDelegationProposal"},
+						},
 					},
 				},
 			},
 		},
-	}
-
-	req := &damlModel.GetActiveContractsRequest{
-		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true},
 	}
 
 	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)

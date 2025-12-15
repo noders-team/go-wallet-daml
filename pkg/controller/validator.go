@@ -54,7 +54,7 @@ func NewValidatorController(userID string, grpcAddress string, scanProxyBaseURL 
 	scanProxyClient := wrapper.NewScanProxyClient(scanProxyBaseURL, provider, false)
 
 	return &ValidatorController{
-		damlClient:      client.NewDamlBindingClient(&client.DamlClient{}, conn.GRPCConn()),
+		damlClient:      client.NewDamlBindingClient(&client.DamlClient{}, conn),
 		scanProxyClient: scanProxyClient,
 		userID:          userID,
 		logger:          logger,
@@ -107,8 +107,10 @@ func (v *ValidatorController) GetValidatorUser(ctx context.Context) (model.Party
 	}
 
 	req := &damlModel.GetActiveContractsRequest{
-		Filter:      filter,
-		EventFormat: &damlModel.EventFormat{Verbose: true},
+		EventFormat: &damlModel.EventFormat{
+			Verbose:        true,
+			FiltersByParty: filter.FiltersByParty,
+		},
 	}
 
 	stream, errChan := v.damlClient.StateService.GetActiveContracts(ctx, req)

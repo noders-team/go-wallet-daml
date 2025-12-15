@@ -8,17 +8,6 @@ type GenerateTransactionResponse struct {
 	TopologyTransactions []string
 }
 
-type TopologyTransaction struct {
-	Transaction string
-}
-
-type Signature struct {
-	Format               string
-	Signature            string
-	SignedBy             string
-	SigningAlgorithmSpec string
-}
-
 type AllocateExternalPartyResponse struct {
 	PartyID string
 }

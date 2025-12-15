@@ -14,14 +14,12 @@ import (
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/crypto"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
-	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
 type LedgerController struct {
 	damlClient     *client.DamlBindingClient
-	ledgerWrapper  *wrapper.LedgerWrapper
 	userID         string
 	isAdmin        bool
 	partyID        atomic.Value
@@ -123,12 +121,9 @@ func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController,
 
 	damlCl := client.NewClient(damlConfig)
 
-	ledgerWrapper := wrapper.NewLedgerWrapper(b.httpBaseURL, b.provider)
-
 	lc := &LedgerController{
 		userID:         b.userID,
 		isAdmin:        b.isAdmin,
-		ledgerWrapper:  ledgerWrapper,
 		logger:         logger,
 		synchronizerID: atomic.Value{},
 		partyID:        atomic.Value{},
@@ -139,7 +134,7 @@ func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController,
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to DAML ledger: %w", err)
 		}
-		lc.damlClient = client.NewDamlBindingClient(&client.DamlClient{}, conn.GRPCConn())
+		lc.damlClient = client.NewDamlBindingClient(&client.DamlClient{}, conn)
 	}
 
 	return lc, nil
@@ -150,7 +145,8 @@ func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController,
 func NewLedgerController(userID string,
 	grpcAddress string,
 	httpBaseURL string,
-	provider *auth.AuthTokenProvider, isAdmin bool) (*LedgerController, error) {
+	provider *auth.AuthTokenProvider, isAdmin bool,
+) (*LedgerController, error) {
 	return NewLedgerControllerBuilder().
 		WithUserID(userID).
 		WithGRPCAddress(grpcAddress).
@@ -445,49 +441,52 @@ func (l *LedgerController) AllocateInternalParty(ctx context.Context, partyHint 
 	return model.PartyID(resp.Party), nil
 }
 
-func (l *LedgerController) GenerateExternalParty(ctx context.Context, publicKey string, partyHint string, confirmingThreshold int, confirmingParticipantUIDs []string, observingParticipantUIDs []string) (*model.GenerateTransactionResponse, error) {
-	syncID, err := l.GetSynchronizerID()
-	if err != nil {
-		return nil, err
-	}
-
-	if partyHint == "" {
-		partyHint = uuid.New().String()
-	}
-
-	return l.ledgerWrapper.GenerateExternalPartyTopology(
-		ctx,
-		string(syncID),
-		publicKey,
-		partyHint,
-		false,
-		int32(confirmingThreshold),
-		confirmingParticipantUIDs,
-		observingParticipantUIDs,
-	)
-}
-
 func (l *LedgerController) AllocateExternalParty(ctx context.Context, signedHash string, preparedParty *model.GenerateTransactionResponse, grantUserRights bool, confirmingEndpoints []*model.ParticipantEndpointConfig, observingEndpoints []*model.ParticipantEndpointConfig, expectHeavyLoad bool) (*model.AllocateExternalPartyResponse, error) {
 	syncID, err := l.GetSynchronizerID()
 	if err != nil {
 		return nil, err
 	}
 
-	transactions := make([]*model.TopologyTransaction, len(preparedParty.TopologyTransactions))
-	for i, tx := range preparedParty.TopologyTransactions {
-		transactions[i] = &model.TopologyTransaction{Transaction: tx}
+	signedHashBytes, err := base64.StdEncoding.DecodeString(signedHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode signed hash: %w", err)
 	}
 
-	signatures := []*model.Signature{
+	onboardingTxs := make([]damlModel.SignedTransaction, len(preparedParty.TopologyTransactions))
+	for i, tx := range preparedParty.TopologyTransactions {
+		txBytes, err := base64.StdEncoding.DecodeString(tx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode transaction %d: %w", i, err)
+		}
+		onboardingTxs[i] = damlModel.SignedTransaction{
+			Transaction: txBytes,
+			Signatures: []damlModel.Signature{
+				{
+					Format:               damlModel.SignatureFormatConcat,
+					Signature:            signedHashBytes,
+					SignedBy:             preparedParty.PublicKeyFingerprint,
+					SigningAlgorithmSpec: damlModel.SigningAlgorithmSpecED25519,
+				},
+			},
+		}
+	}
+
+	multiHashSigs := []damlModel.Signature{
 		{
-			Format:               "SIGNATURE_FORMAT_CONCAT",
-			Signature:            signedHash,
+			Format:               damlModel.SignatureFormatConcat,
+			Signature:            signedHashBytes,
 			SignedBy:             preparedParty.PublicKeyFingerprint,
-			SigningAlgorithmSpec: "SIGNING_ALGORITHM_SPEC_ED25519",
+			SigningAlgorithmSpec: damlModel.SigningAlgorithmSpecED25519,
 		},
 	}
 
-	partyID, err := l.ledgerWrapper.AllocateExternalParty(ctx, string(syncID), transactions, signatures)
+	partyID, err := l.damlClient.PartyMng.AllocateExternalParty(
+		ctx,
+		string(syncID),
+		onboardingTxs,
+		multiHashSigs,
+		"",
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -504,58 +503,6 @@ func (l *LedgerController) AllocateExternalParty(ctx context.Context, signedHash
 	}
 
 	return &model.AllocateExternalPartyResponse{PartyID: partyID}, nil
-}
-
-func (l *LedgerController) SignAndAllocateExternalParty(ctx context.Context, privateKey string, partyHint string, confirmingThreshold int, confirmingEndpoints []*model.ParticipantEndpointConfig, observingEndpoints []*model.ParticipantEndpointConfig, grantUserRights bool) (*model.GenerateTransactionResponse, error) {
-	publicKey, err := crypto.GetPublicKeyFromPrivate(privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get public key: %w", err)
-	}
-
-	var confirmingUIDs []string
-	var observingUIDs []string
-
-	preparedParty, err := l.GenerateExternalParty(ctx, publicKey, partyHint, confirmingThreshold, confirmingUIDs, observingUIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	signedHash, err := crypto.SignTransactionHash(preparedParty.MultiHash, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign multi-hash: %w", err)
-	}
-
-	_, err = l.AllocateExternalParty(ctx, signedHash, preparedParty, grantUserRights, confirmingEndpoints, observingEndpoints, true)
-	if err != nil {
-		return nil, err
-	}
-
-	return preparedParty, nil
-}
-
-func (l *LedgerController) SignAndAllocateExternalPartyWithPreapproval(ctx context.Context, privateKey string, providerParty model.PartyID, dsoParty model.PartyID, partyHint string, confirmingThreshold int, confirmingEndpoints []*model.ParticipantEndpointConfig, observingEndpoints []*model.ParticipantEndpointConfig, grantUserRights bool) (*model.GenerateTransactionResponse, error) {
-	allocatedParty, err := l.SignAndAllocateExternalParty(ctx, privateKey, partyHint, confirmingThreshold, confirmingEndpoints, observingEndpoints, grantUserRights)
-	if err != nil {
-		return nil, err
-	}
-
-	oldPartyID, _ := l.GetPartyID()
-	l.SetPartyID(model.PartyID(allocatedParty.PartyID))
-
-	transferPreapprovalCmd, err := l.CreateTransferPreapprovalCommand(ctx, providerParty, model.PartyID(allocatedParty.PartyID), dsoParty)
-	if err != nil {
-		l.SetPartyID(oldPartyID)
-		return nil, err
-	}
-
-	_, err = l.PrepareSignExecuteAndWaitFor(ctx, []*model.WrappedCommand{transferPreapprovalCmd}, privateKey, uuid.New().String(), nil, 15000)
-	if err != nil {
-		l.SetPartyID(oldPartyID)
-		return nil, fmt.Errorf("failed to create transfer preapproval: %w", err)
-	}
-
-	l.SetPartyID(oldPartyID)
-	return allocatedParty, nil
 }
 
 func (l *LedgerController) CreateTransferPreapprovalCommand(ctx context.Context, providerParty model.PartyID, receiverParty model.PartyID, dsoParty model.PartyID) (*model.WrappedCommand, error) {
@@ -628,8 +575,10 @@ func (l *LedgerController) GetActiveContracts(ctx context.Context, filter *model
 	}
 
 	req := &damlModel.GetActiveContractsRequest{
-		Filter:      damlFilter,
-		EventFormat: &damlModel.EventFormat{Verbose: true},
+		EventFormat: &damlModel.EventFormat{
+			Verbose:        true,
+			FiltersByParty: damlFilter.FiltersByParty,
+		},
 	}
 
 	var activeContracts []*model.ActiveContract
