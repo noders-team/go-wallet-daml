@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var cl *client.DamlBindingClient
+var (
+	cl              *client.DamlBindingClient
+	sandboxGrpcAddr string
+	sandboxHTTPAddr string
+	synchronizerID  string
+)
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
@@ -31,7 +37,9 @@ func TestMain(m *testing.M) {
 		log.Fatal().Err(err).Msg("Could not ping docker")
 	}
 
-	resDaml, grpcAddr := initDamlSandbox(ctx, dockerPool)
+	resDaml, resJSONAPI, grpcAddr, httpAddr := initDamlSandbox(ctx, dockerPool)
+	sandboxGrpcAddr = grpcAddr
+	sandboxHTTPAddr = httpAddr
 
 	builder := client.NewDamlClient("", grpcAddr)
 	if strings.HasSuffix(grpcAddr, ":443") {
@@ -44,7 +52,7 @@ func TestMain(m *testing.M) {
 		log.Fatal().Err(err).Msg("failed to build DAML client")
 	}
 
-	log.Info().Msg("Canton sandbox initialization complete, setting up test environment")
+	log.Info().Msg("canton sandbox initialization complete, setting up test environment")
 
 	testUser := "app-provider"
 	users, err := cl.UserMng.ListUsers(ctx)
@@ -65,7 +73,7 @@ func TestMain(m *testing.M) {
 		log.Info().Msgf("creating user %s", testUser)
 
 		log.Info().Msg("waiting for synchronizer connection before allocating party...")
-		time.Sleep(30 * time.Second)
+		time.Sleep(90 * time.Second)
 
 		partyDetails, err := cl.PartyMng.AllocateParty(ctx, "", nil, "")
 		if err != nil {
@@ -88,16 +96,106 @@ func TestMain(m *testing.M) {
 		log.Info().Msgf("created user %s with party %s", testUser, partyDetails.Party)
 	}
 
+	log.Info().Msg("Retrieving synchronizer ID...")
+	synchronizerID, err = getSynchronizerID(ctx, resDaml)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to get synchronizer ID - using default")
+		synchronizerID = "global-domain"
+	} else {
+		log.Info().Msgf("Synchronizer ID: %s", synchronizerID)
+	}
+
+	log.Info().Msg("Uploading amulet DAR files...")
+	if err := uploadDARFiles(ctx); err != nil {
+		log.Warn().Err(err).Msg("Failed to upload DAR files - tests may fail")
+	} else {
+		log.Info().Msg("DAR files uploaded successfully")
+
+		packages, err := cl.PackageMng.ListKnownPackages(ctx)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to list packages")
+		} else {
+			log.Info().Msgf("Available packages (%d):", len(packages))
+			for _, pkg := range packages {
+				log.Info().Msgf("  - Package ID: %s (Name: %s, Version: %s)", pkg.PackageID, pkg.Name, pkg.Version)
+			}
+		}
+	}
+
 	log.Info().Msg("Test environment ready, running tests")
 
 	code := m.Run()
 
-	purgeResources(dockerPool, resDaml)
+	purgeResources(dockerPool, resDaml, resJSONAPI)
 
 	os.Exit(code)
 }
 
-func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockertest.Resource, string) {
+func getSynchronizerID(ctx context.Context, resource *dockertest.Resource) (string, error) {
+	synchronizerID := "sandbox::sequencer1"
+	log.Info().Msgf("Using synchronizer ID: %s (based on Canton config)", synchronizerID)
+	return synchronizerID, nil
+}
+
+func uploadDARFiles(ctx context.Context) error {
+	darFileNames := []string{
+		"splice-amulet-current.dar",
+		"splice-wallet-0.1.14.dar",
+		"splice-wallet-payments-0.1.14.dar",
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+	log.Info().Msgf("Current working directory: %s", cwd)
+
+	possibleDarPaths := []string{
+		".dar",
+		"../../.dar",
+		filepath.Join(cwd, ".dar"),
+		filepath.Join(cwd, "../../.dar"),
+	}
+
+	var darBasePath string
+	for _, path := range possibleDarPaths {
+		absPath, _ := filepath.Abs(path)
+		if _, err := os.Stat(absPath); err == nil {
+			darBasePath = absPath
+			log.Info().Msgf("Found .dar directory at: %s", darBasePath)
+			break
+		}
+	}
+
+	if darBasePath == "" {
+		return fmt.Errorf(".dar directory not found in any of the expected locations")
+	}
+
+	for _, fileName := range darFileNames {
+		darPath := filepath.Join(darBasePath, fileName)
+
+		if _, err := os.Stat(darPath); os.IsNotExist(err) {
+			log.Warn().Str("path", darPath).Msg("DAR file not found, skipping")
+			continue
+		}
+
+		darBytes, err := os.ReadFile(darPath)
+		if err != nil {
+			return fmt.Errorf("failed to read DAR file %s: %w", darPath, err)
+		}
+
+		err = cl.PackageMng.UploadDarFile(ctx, darBytes, "")
+		if err != nil {
+			return fmt.Errorf("failed to upload DAR file %s: %w", darPath, err)
+		}
+
+		log.Info().Str("path", darPath).Int("size", len(darBytes)).Msg("Uploaded DAR file")
+	}
+
+	return nil
+}
+
+func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockertest.Resource, *dockertest.Resource, string, string) {
 	ledgerAPIPort := "6865"
 
 	cantonConfig := `canton {
@@ -145,6 +243,7 @@ func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockert
 		Repository: "digitalasset/daml-sdk",
 		Tag:        "3.5.0-snapshot.20251106.0",
 		Platform:   "linux/amd64",
+		Name:       "daml-sandbox",
 		Cmd: []string{
 			"daml",
 			"sandbox",
@@ -169,14 +268,74 @@ func initDamlSandbox(ctx context.Context, dockerPool *dockertest.Pool) (*dockert
 
 	log.Info().Msgf("DAML sandbox started, Ledger API (gRPC) on %s", grpcAddr)
 
-	if err := waitForPort(ctx, mappedLedgerPort, 2*time.Minute); err != nil {
+	if err := waitForPort(ctx, mappedLedgerPort, 1*time.Minute); err != nil {
 		log.Fatal().Err(err).Msgf("DAML sandbox Ledger API port %s not ready", mappedLedgerPort)
 	}
 
 	log.Info().Msg("Port is open, waiting for Canton to fully initialize gRPC...")
-	time.Sleep(120 * time.Second)
+	if err := waitForCantonGRPC(ctx, grpcAddr, 3*time.Minute); err != nil {
+		log.Fatal().Err(err).Msg("Canton gRPC services not ready")
+	}
+	log.Info().Msg("Canton gRPC services are ready, starting JSON API server...")
 
-	return resource, grpcAddr
+	// run json api-server
+	cantonApiConfig := `{
+  server {
+    address = "0.0.0.0"
+    port = 7575
+  }
+  ledger-api {
+    address = "host.docker.internal"
+    port = ` + mappedLedgerPort + `
+  }
+}`
+
+	jsonAPIConfigPath := fmt.Sprintf("%s/json-api.conf", tmpDir)
+	if err := os.WriteFile(jsonAPIConfigPath, []byte(cantonApiConfig), 0o644); err != nil {
+		log.Fatal().Err(err).Msg("Could not write JSON API config")
+	}
+
+	jsonAPIPort := "7575"
+	jsonAPIResource, err := dockerPool.RunWithOptions(&dockertest.RunOptions{
+		Repository: "digitalasset/daml-sdk",
+		Tag:        "3.5.0-snapshot.20251106.0",
+		Platform:   "linux/amd64",
+		Name:       "daml-json-api",
+		Cmd: []string{
+			"daml",
+			"sandbox",
+			"--json-api-port",
+			jsonAPIPort,
+			"--config", "/json-api/json-api.conf",
+		},
+		ExposedPorts: []string{jsonAPIPort + "/tcp"},
+		Mounts:       []string{fmt.Sprintf("%s:/json-api/json-api.conf:ro", jsonAPIConfigPath)},
+	}, func(config *docker.HostConfig) {
+		config.AutoRemove = false
+		config.RestartPolicy = docker.RestartPolicy{
+			Name: "no",
+		}
+		config.ExtraHosts = []string{"host.docker.internal:host-gateway"}
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("could not start JSON API server")
+	}
+
+	jsonAPIResource.Expire(300)
+
+	mappedJSONAPIPort := jsonAPIResource.GetPort(jsonAPIPort + "/tcp")
+	httpAddr := fmt.Sprintf("http://127.0.0.1:%s", mappedJSONAPIPort)
+
+	log.Info().Msgf("JSON API server started on %s", httpAddr)
+
+	if err := waitForPort(ctx, mappedJSONAPIPort, 2*time.Minute); err != nil {
+		log.Fatal().Err(err).Msgf("JSON API server port %s not ready", mappedJSONAPIPort)
+	}
+
+	log.Info().Msg("JSON API server is ready")
+	time.Sleep(120 * time.Second) // Additional wait for JSON API to fully initialize
+
+	return resource, jsonAPIResource, grpcAddr, httpAddr
 }
 
 func waitForPort(ctx context.Context, port string, timeout time.Duration) error {
@@ -201,6 +360,42 @@ func waitForPort(ctx context.Context, port string, timeout time.Duration) error 
 	}
 
 	return fmt.Errorf("timeout waiting for port %s", port)
+}
+
+func waitForCantonGRPC(ctx context.Context, grpcAddr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	retryDelay := 5 * time.Second
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		testCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		builder := client.NewDamlClient("", grpcAddr)
+		testClient, err := builder.Build(testCtx)
+		cancel()
+
+		if err == nil {
+			testCtx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err = testClient.UserMng.ListUsers(testCtx2)
+			cancel2()
+
+			if err == nil {
+				log.Info().Msg("Canton gRPC services are ready")
+				return nil
+			}
+			log.Info().Err(err).Msg("Canton gRPC not ready yet, retrying...")
+		} else {
+			log.Info().Err(err).Msg("Canton gRPC connection failed, retrying...")
+		}
+
+		time.Sleep(retryDelay)
+	}
+
+	return fmt.Errorf("timeout waiting for Canton gRPC services")
 }
 
 func purgeResources(dockerPool *dockertest.Pool, resources ...*dockertest.Resource) {

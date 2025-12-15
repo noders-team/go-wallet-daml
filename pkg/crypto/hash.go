@@ -1,13 +1,10 @@
 package crypto
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
-	"sort"
 )
 
 const (
@@ -39,26 +36,11 @@ func ComputeSHA256CantonHash(purpose int, data []byte) ([]byte, error) {
 }
 
 func ComputeMultiHashForTopology(hashes [][]byte) ([]byte, error) {
-	sortedHashes := make([][]byte, len(hashes))
-	copy(sortedHashes, hashes)
-	sort.Slice(sortedHashes, func(i, j int) bool {
-		return hex.EncodeToString(sortedHashes[i]) < hex.EncodeToString(sortedHashes[j])
-	})
-
-	numHashes := make([]byte, 4)
-	binary.BigEndian.PutUint32(numHashes, uint32(len(sortedHashes)))
-
-	var buf bytes.Buffer
-	buf.Write(numHashes)
-
-	for _, h := range sortedHashes {
-		lengthBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(lengthBytes, uint32(len(h)))
-		buf.Write(lengthBytes)
-		buf.Write(h)
+	h := sha256.New()
+	for _, hash := range hashes {
+		h.Write(hash)
 	}
-
-	return ComputeSHA256CantonHash(CantonHashPurposeMultiTopologyTxHashes, buf.Bytes())
+	return h.Sum(nil), nil
 }
 
 func HashPreparedTransaction(preparedTransactionBase64 string) (string, error) {

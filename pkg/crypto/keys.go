@@ -51,5 +51,5 @@ func CreateFingerprintFromKey(publicKeyBase64 string) (string, error) {
 		return "", fmt.Errorf("failed to compute Canton hash: %w", err)
 	}
 
-	return base64.StdEncoding.EncodeToString(hash), nil
+	return fmt.Sprintf("%x", hash), nil
 }

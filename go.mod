@@ -4,10 +4,13 @@ go 1.23.0
 
 toolchain go1.24.10
 
+//replace github.com/noders-team/go-daml => /Users/artem_bogomaz/Documents/GIT2/nodersteam/go-daml
+replace github.com/digital-asset/dazl-client/v8 => github.com/noders-team/dazl-client/v8 v8.7.1-2
+
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
-	github.com/noders-team/go-daml v0.2.0
+	github.com/noders-team/go-daml v0.3.0
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/rs/zerolog v1.34.0
 	github.com/shopspring/decimal v1.4.0
@@ -22,7 +25,7 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/containerd/continuity v0.4.5 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/digital-asset/dazl-client/v8 v8.4.2 // indirect
+	github.com/digital-asset/dazl-client/v8 v8.7.1 // indirect
 	github.com/docker/cli v27.4.1+incompatible // indirect
 	github.com/docker/docker v28.3.3+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
