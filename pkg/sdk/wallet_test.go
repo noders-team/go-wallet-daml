@@ -11,6 +11,7 @@ import (
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/sdk"
+	"github.com/noders-team/go-wallet-daml/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,21 +19,19 @@ func TestAllocateExternalParty(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	grpcAddr := testutil.GetGrpcAddr()
+	scanProxyURL := testutil.GetScanProxyBaseURL()
+
 	walletSDK := sdk.NewWalletSDK()
 	walletSDK.Configure(sdk.Config{
 		AuthFactory: func() auth.AuthController {
-			return auth.NewUnsafeAuthController(
-				auth.UnsafeWithUserID("app-provider"),
-				auth.UnsafeWithAdminID("app-provider"),
-				auth.UnsafeWithAudience("https://canton.network.global"),
-				auth.UnsafeWithSecret("unsafe"),
-			)
+			return auth.NewMockAuthController("app-provider")
 		},
 		LedgerFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error) {
 			return controller.NewLedgerController(
 				userID,
-				sandboxGrpcAddr,
-				sandboxHTTPAddr,
+				grpcAddr,
+				scanProxyURL,
 				provider,
 				isAdmin,
 			)
@@ -40,7 +39,7 @@ func TestAllocateExternalParty(t *testing.T) {
 		TokenStandardFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error) {
 			return controller.NewTokenStandardController(
 				userID,
-				sandboxGrpcAddr,
+				grpcAddr,
 				provider,
 				isAdmin,
 			)
@@ -48,8 +47,8 @@ func TestAllocateExternalParty(t *testing.T) {
 		ValidatorFactory: func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error) {
 			return controller.NewValidatorController(
 				userID,
-				sandboxGrpcAddr,
-				sandboxHTTPAddr,
+				grpcAddr,
+				scanProxyURL,
 				provider,
 			)
 		},
@@ -58,6 +57,7 @@ func TestAllocateExternalParty(t *testing.T) {
 	require.NoError(t, walletSDK.ConnectAdmin(ctx))
 	require.NotNil(t, walletSDK.AdminLedger())
 
+	cl := testutil.GetClient()
 	packages, err := cl.PackageMng.ListKnownPackages(ctx)
 	require.NoError(t, err)
 
@@ -77,21 +77,20 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	grpcAddr := testutil.GetGrpcAddr()
+	scanProxyURL := testutil.GetScanProxyBaseURL()
+	synchronizerID := testutil.GetSynchronizerID()
+
 	walletSDK := sdk.NewWalletSDK()
 	walletSDK.Configure(sdk.Config{
 		AuthFactory: func() auth.AuthController {
-			return auth.NewUnsafeAuthController(
-				auth.UnsafeWithUserID("app-provider"),
-				auth.UnsafeWithAdminID("app-provider"),
-				auth.UnsafeWithAudience("https://canton.network.global"),
-				auth.UnsafeWithSecret("unsafe"),
-			)
+			return auth.NewMockAuthController("app-provider")
 		},
 		LedgerFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error) {
 			return controller.NewLedgerController(
 				userID,
-				sandboxGrpcAddr,
-				sandboxHTTPAddr,
+				grpcAddr,
+				scanProxyURL,
 				provider,
 				isAdmin,
 			)
@@ -99,7 +98,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 		TokenStandardFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error) {
 			return controller.NewTokenStandardController(
 				userID,
-				sandboxGrpcAddr,
+				grpcAddr,
 				provider,
 				isAdmin,
 			)
@@ -107,14 +106,15 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 		ValidatorFactory: func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error) {
 			return controller.NewValidatorController(
 				userID,
-				sandboxGrpcAddr,
-				sandboxHTTPAddr,
+				grpcAddr,
+				scanProxyURL,
 				provider,
 			)
 		},
 	})
 	require.NoError(t, walletSDK.Connect(ctx))
 
+	cl := testutil.GetClient()
 	packages, err := cl.PackageMng.ListKnownPackages(ctx)
 	require.NoError(t, err)
 
@@ -140,9 +140,9 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	t.Logf("Synchronizer ID: %s", synchronizerID)
 
 	walletSDK.TokenStandard().SetPartyID(model.PartyID(dsoParty.Party))
-	walletSDK.TokenStandard().SetSynchronizerID(model.PartyID(synchronizerID))
+	walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
 	walletSDK.Validator().SetPartyID(model.PartyID(dsoParty.Party))
-	walletSDK.Validator().SetSynchronizerID(model.PartyID(synchronizerID))
+	walletSDK.Validator().SetSynchronizerID(synchronizerID)
 
 	retrievedParty, err := walletSDK.TokenStandard().GetPartyID()
 	require.NoError(t, err)
@@ -151,10 +151,6 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	balance, err := walletSDK.TokenStandard().GetBalance(ctx)
 	require.NoError(t, err)
 	require.True(t, balance.IsZero(), "expected balance to be zero, got %s", balance.String())
-
-	// walletSDK.TokenStandard().Mint(ctx, model.PartyID(dsoParty.Party), decimal.NewFromInt(1000), "AMT", "AMT")
-
-	// amuletRulesCid, openRoundCid := setupAmuletSystem(t, ctx, dsoParty.Party, spliceAmuletPkgID)
 
 	externalParty, err := cl.PartyMng.AllocateParty(ctx, "external-"+uuid.New().String()[:8], nil, "")
 	require.NoError(t, err)
@@ -176,5 +172,5 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	t.Log("Successfully minted amulet for external party")
+	t.Log("Test setup complete - wallet initialized with balance check")
 }
