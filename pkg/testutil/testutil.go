@@ -815,7 +815,7 @@ checkLoop:
 			"futureValues": []interface{}{},
 		},
 		"decentralizedSynchronizer": defaultDecentralizedSynchronizerConfig,
-		"tickDuration":              map[string]interface{}{"microseconds": int64(600000000)},
+		"tickDuration":              map[string]interface{}{"microseconds": int64(1000000)},
 		"packageConfig": map[string]interface{}{
 			"amulet":             "0.1.0",
 			"amuletNameService":  "0.1.0",
@@ -1102,7 +1102,7 @@ verifyLoop:
 
 	bootstrapArgs := map[string]interface{}{
 		"amuletPrice":    decimalToNumeric(1.0),
-		"round0Duration": map[string]interface{}{"microseconds": int64(86400000000)},
+		"round0Duration": map[string]interface{}{"microseconds": int64(1000000)},
 		"initialRound":   map[string]interface{}{"_type": "optional", "value": 0},
 	}
 

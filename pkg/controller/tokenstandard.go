@@ -570,6 +570,23 @@ type CreateTransferResult struct {
 	DisclosedContracts []*damlModel.DisclosedContract
 }
 
+type InputAmuletVariant struct {
+	ContractID string
+}
+
+func (v InputAmuletVariant) GetVariantTag() string {
+	return "InputAmulet"
+}
+
+func (v InputAmuletVariant) GetVariantValue() interface{} {
+	return types.CONTRACT_ID(v.ContractID)
+}
+
+func decimalToNumeric(d decimal.Decimal) types.NUMERIC {
+	scaled := d.Mul(decimal.NewFromInt(10000000000))
+	return types.NUMERIC(scaled.BigInt())
+}
+
 func (t *TokenStandardController) CreateTransfer(
 	ctx context.Context,
 	sender model.PartyID,
@@ -584,24 +601,24 @@ func (t *TokenStandardController) CreateTransfer(
 		return nil, fmt.Errorf("instrumentAdmin is required")
 	}
 
-	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
+	amuletRulesTemplateID, amuletRulesContractID, err := t.findAmuletRulesContract(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list packages: %w", err)
+		return nil, fmt.Errorf("failed to find AmuletRules contract: %w", err)
 	}
 
-	var spliceAmuletPkgID string
-	for _, pkg := range packages {
-		if pkg.Name == "splice-amulet" {
-			spliceAmuletPkgID = pkg.PackageID
-			break
-		}
+	t.logger.Debug().
+		Str("amuletRulesTemplateID", amuletRulesTemplateID).
+		Str("amuletRulesContractID", amuletRulesContractID).
+		Msg("Found AmuletRules contract for transfer")
+
+	if amuletRulesContractID == "" {
+		return nil, fmt.Errorf("amuletRulesContractID is empty")
 	}
 
-	if spliceAmuletPkgID == "" {
-		return nil, fmt.Errorf("splice-amulet package not found")
+	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	if openMiningRoundContractID == "" {
+		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set")
 	}
-
-	amuletTemplateID := fmt.Sprintf("%s:Splice.Amulet:Amulet", spliceAmuletPkgID)
 
 	var utxosToUse []string
 	if len(inputUtxos) > 0 {
@@ -628,16 +645,54 @@ func (t *TokenStandardController) CreateTransfer(
 		}
 	}
 
+	if len(utxosToUse) == 0 {
+		return nil, fmt.Errorf("no utxos available for transfer")
+	}
+
+	var transferInputs []interface{}
+	for _, utxo := range utxosToUse {
+		transferInputs = append(transferInputs, InputAmuletVariant{ContractID: utxo})
+	}
+
+	transferOutput := map[string]interface{}{
+		"receiver":         types.PARTY(string(receiver)),
+		"receiverFeeRatio": decimalToNumeric(decimal.Zero),
+		"amount":           decimalToNumeric(amount),
+	}
+
+	transferStruct := map[string]interface{}{
+		"sender":   types.PARTY(string(sender)),
+		"provider": types.PARTY(string(sender)),
+		"inputs":   transferInputs,
+		"outputs":  []interface{}{transferOutput},
+	}
+
+	emptyGenMap := map[string]interface{}{
+		"_type": "genmap",
+		"value": make(map[string]interface{}),
+	}
+
+	transferContext := map[string]interface{}{
+		"openMiningRound":     types.CONTRACT_ID(openMiningRoundContractID),
+		"issuingMiningRounds": emptyGenMap,
+		"validatorRights":     emptyGenMap,
+	}
+
+	dsoParty := types.PARTY(instrumentAdmin)
+	expectedDso := map[string]interface{}{
+		"_type": "optional",
+		"value": dsoParty,
+	}
+
 	transferCmd := &damlModel.Command{
 		Command: &damlModel.ExerciseCommand{
-			TemplateID: amuletTemplateID,
-			Choice:     "Amulet_Transfer",
+			TemplateID: amuletRulesTemplateID,
+			ContractID: amuletRulesContractID,
+			Choice:     "AmuletRules_Transfer",
 			Arguments: map[string]interface{}{
-				"sender":   string(sender),
-				"receiver": string(receiver),
-				"amount":   amount.String(),
-				"inputs":   utxosToUse,
-				"memo":     memo,
+				"transfer":    transferStruct,
+				"context":     transferContext,
+				"expectedDso": expectedDso,
 			},
 		},
 	}
@@ -679,7 +734,7 @@ func (t *TokenStandardController) CreateTap(
 			Choice:     "AmuletRules_DevNet_Tap",
 			Arguments: map[string]interface{}{
 				"receiver":  types.PARTY(string(receiver)),
-				"amount":    types.NUMERIC(amount.BigInt()),
+				"amount":    decimalToNumeric(amount),
 				"openRound": types.CONTRACT_ID(openMiningRoundContractID),
 			},
 		},

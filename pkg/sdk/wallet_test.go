@@ -328,27 +328,102 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, transferResult)
 
-	submitReq := &damlModel.SubmitRequest{
+	submitReq := &damlModel.SubmitAndWaitRequest{
 		Commands: &damlModel.Commands{
 			UserID:    "app-provider",
 			CommandID: fmt.Sprintf("transfer-%d", time.Now().UnixNano()),
 			Commands:  []*damlModel.Command{transferResult.Command},
-			ActAs:     []string{string(dsoPartyID)},
+			ActAs:     []string{string(dsoPartyID), string(externalPartyID)},
 			ReadAs:    []string{},
 		},
 	}
 
-	_, err = cl.CommandSubmission.Submit(ctx, submitReq)
+	transferResp, err := cl.CommandService.SubmitAndWait(ctx, submitReq)
 	require.NoError(t, err)
+	t.Logf("Transfer submitted successfully, updateID: %s", transferResp.UpdateID)
+
+	updatesReq := &damlModel.GetUpdatesRequest{
+		BeginExclusive: 0,
+		UpdateFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				string(dsoPartyID): {
+					Inclusive: &damlModel.InclusiveFilters{},
+				},
+				string(externalPartyID): {
+					Inclusive: &damlModel.InclusiveFilters{},
+				},
+			},
+		},
+	}
+
+	updatesStream, updatesErrChan := cl.UpdateService.GetUpdates(ctx, updatesReq)
+	timeout := time.After(5 * time.Second)
+	foundTransferTx := false
+
+transferLoop:
+	for {
+		select {
+		case resp, ok := <-updatesStream:
+			if !ok {
+				break transferLoop
+			}
+			if resp.Update != nil && resp.Update.Transaction != nil {
+				tx := resp.Update.Transaction
+				if tx.UpdateID == transferResp.UpdateID {
+					foundTransferTx = true
+					t.Logf("Found transfer transaction with %d events", len(tx.Events))
+					for i, event := range tx.Events {
+						if event.Created != nil {
+							t.Logf("  Event %d: Created contract TemplateID=%s, ContractID=%s",
+								i, event.Created.TemplateID, event.Created.ContractID)
+							if args, ok := event.Created.CreateArguments.(map[string]interface{}); ok {
+								if owner, ok := args["owner"]; ok {
+									t.Logf("    Owner: %+v", owner)
+								}
+								if amount, ok := args["amount"]; ok {
+									t.Logf("    Amount: %+v", amount)
+								}
+							}
+							t.Logf("    Signatories: %+v", event.Created.Signatories)
+							t.Logf("    Observers: %+v", event.Created.Observers)
+						} else if event.Archived != nil {
+							t.Logf("  Event %d: Archived contract TemplateID=%s, ContractID=%s",
+								i, event.Archived.TemplateID, event.Archived.ContractID)
+						}
+					}
+					break transferLoop
+				}
+			}
+		case err := <-updatesErrChan:
+			if err != nil {
+				t.Logf("Error getting updates: %v", err)
+				break transferLoop
+			}
+		case <-timeout:
+			t.Logf("Timeout waiting for transfer transaction in updates stream")
+			break transferLoop
+		}
+	}
+
+	if !foundTransferTx {
+		t.Logf("Warning: Could not find transfer transaction in updates stream")
+	}
 
 	time.Sleep(3 * time.Second)
 
 	t.Log("Verifying balances after first transfer")
 	walletSDK.TokenStandard().SetPartyID(model.PartyID(externalParty.Party))
-	externalBalanceAfterTransfer, err := walletSDK.TokenStandard().GetBalance(ctx)
+
+	externalHoldingsAfterTransfer, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 	require.NoError(t, err)
+
+	externalBalanceAfterTransfer := decimal.Zero
+	for _, holding := range externalHoldingsAfterTransfer {
+		externalBalanceAfterTransfer = externalBalanceAfterTransfer.Add(holding.Amount)
+	}
+	t.Logf("External party balance after transfer: %s (from %d holdings)", externalBalanceAfterTransfer.String(), len(externalHoldingsAfterTransfer))
 	require.True(t, externalBalanceAfterTransfer.GreaterThan(decimal.Zero), "external party balance should be greater than zero after transfer, got %s", externalBalanceAfterTransfer.String())
-	t.Logf("External party balance after transfer: %s", externalBalanceAfterTransfer.String())
 
 	t.Log("Creating transfer from external party to receiver")
 	finalTransferAmount := decimal.NewFromFloat(200.0)
@@ -372,44 +447,61 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 		model.PartyID(receiverParty.Party),
 		finalTransferAmount,
 		externalHoldings[0].InstrumentID,
-		externalHoldings[0].InstrumentAdmin,
+		string(dsoPartyID),
 		externalInputUtxos,
 		"test-transfer-to-receiver",
 	)
 	require.NoError(t, err)
 	require.NotNil(t, finalTransferResult)
 
-	finalSubmitReq := &damlModel.SubmitRequest{
+	finalSubmitReq := &damlModel.SubmitAndWaitRequest{
 		Commands: &damlModel.Commands{
 			UserID:    "app-provider",
 			CommandID: fmt.Sprintf("transfer-%d", time.Now().UnixNano()),
 			Commands:  []*damlModel.Command{finalTransferResult.Command},
-			ActAs:     []string{externalParty.Party},
+			ActAs:     []string{string(dsoPartyID), externalParty.Party, receiverParty.Party},
 			ReadAs:    []string{},
 		},
 	}
 
-	_, err = cl.CommandSubmission.Submit(ctx, finalSubmitReq)
+	finalTransferResp, err := cl.CommandService.SubmitAndWait(ctx, finalSubmitReq)
 	require.NoError(t, err)
+	t.Logf("Final transfer submitted successfully, updateID: %s", finalTransferResp.UpdateID)
 
 	time.Sleep(3 * time.Second)
 
 	t.Log("Verifying final balances")
 	walletSDK.TokenStandard().SetPartyID(model.PartyID(receiverParty.Party))
-	receiverFinalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+
+	receiverFinalHoldings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 	require.NoError(t, err)
+
+	receiverFinalBalance := decimal.Zero
+	for _, holding := range receiverFinalHoldings {
+		receiverFinalBalance = receiverFinalBalance.Add(holding.Amount)
+	}
+	t.Logf("Receiver party final balance: %s (from %d holdings)", receiverFinalBalance.String(), len(receiverFinalHoldings))
 	require.True(t, receiverFinalBalance.GreaterThan(decimal.Zero), "receiver party balance should be greater than zero after final transfer, got %s", receiverFinalBalance.String())
-	t.Logf("Receiver party final balance: %s", receiverFinalBalance.String())
 
 	walletSDK.TokenStandard().SetPartyID(model.PartyID(externalParty.Party))
-	externalFinalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	externalFinalHoldings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 	require.NoError(t, err)
-	t.Logf("External party final balance: %s", externalFinalBalance.String())
+
+	externalFinalBalance := decimal.Zero
+	for _, holding := range externalFinalHoldings {
+		externalFinalBalance = externalFinalBalance.Add(holding.Amount)
+	}
+	t.Logf("External party final balance: %s (from %d holdings)", externalFinalBalance.String(), len(externalFinalHoldings))
 
 	walletSDK.TokenStandard().SetPartyID(dsoPartyID)
-	dsoFinalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	dsoFinalHoldings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 	require.NoError(t, err)
-	t.Logf("DSO party final balance: %s", dsoFinalBalance.String())
+
+	dsoFinalBalance := decimal.Zero
+	for _, holding := range dsoFinalHoldings {
+		dsoFinalBalance = dsoFinalBalance.Add(holding.Amount)
+	}
+	t.Logf("DSO party final balance: %s (from %d holdings)", dsoFinalBalance.String(), len(dsoFinalHoldings))
 
 	t.Log("Test completed successfully - mint and transfer operations verified")
 }
