@@ -16,6 +16,7 @@ import (
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/sdk"
 	"github.com/noders-team/go-wallet-daml/pkg/testutil"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -189,7 +190,144 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	t.Log("Test setup complete - wallet initialized with balance check")
+	t.Log("Minting amulets to DSO party")
+	mintAmount := decimal.NewFromFloat(1000.0)
+	_, err = walletSDK.TokenStandard().CreateAndSubmitTapInternal(ctx, model.PartyID(dsoParty.Party), mintAmount, "", dsoParty.Party)
+	require.NoError(t, err)
+
+	time.Sleep(3 * time.Second)
+
+	t.Log("Verifying DSO party balance after mint")
+	dsoBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	require.NoError(t, err)
+	require.True(t, dsoBalance.GreaterThan(decimal.Zero), "DSO balance should be greater than zero after minting, got %s", dsoBalance.String())
+	t.Logf("DSO balance after mint: %s", dsoBalance.String())
+
+	walletSDK.TokenStandard().SetPartyID(model.PartyID(externalParty.Party))
+	externalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	require.NoError(t, err)
+	require.True(t, externalBalance.IsZero(), "external party balance should be zero, got %s", externalBalance.String())
+
+	walletSDK.TokenStandard().SetPartyID(model.PartyID(receiverParty.Party))
+	receiverBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	require.NoError(t, err)
+	require.True(t, receiverBalance.IsZero(), "receiver party balance should be zero, got %s", receiverBalance.String())
+
+	walletSDK.TokenStandard().SetPartyID(model.PartyID(dsoParty.Party))
+
+	t.Log("Creating transfer from DSO to external party")
+	transferAmount := decimal.NewFromFloat(500.0)
+
+	holdings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, false, 100)
+	require.NoError(t, err)
+	require.NotEmpty(t, holdings, "DSO party should have holding UTXOs")
+
+	var inputUtxos []string
+	for _, holding := range holdings {
+		inputUtxos = append(inputUtxos, holding.ContractID)
+		if holding.Amount.GreaterThanOrEqual(transferAmount) {
+			break
+		}
+	}
+	require.NotEmpty(t, inputUtxos, "should have input UTXOs for transfer")
+
+	transferResult, err := walletSDK.TokenStandard().CreateTransfer(
+		ctx,
+		model.PartyID(dsoParty.Party),
+		externalPartyID,
+		transferAmount,
+		holdings[0].InstrumentID,
+		holdings[0].InstrumentAdmin,
+		inputUtxos,
+		"test-transfer-to-external",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, transferResult)
+
+	submitReq := &damlModel.SubmitRequest{
+		Commands: &damlModel.Commands{
+			UserID:    "app-provider",
+			CommandID: fmt.Sprintf("transfer-%d", time.Now().UnixNano()),
+			Commands:  []*damlModel.Command{transferResult.Command},
+			ActAs:     []string{dsoParty.Party},
+			ReadAs:    []string{},
+		},
+	}
+
+	_, err = cl.CommandSubmission.Submit(ctx, submitReq)
+	require.NoError(t, err)
+
+	time.Sleep(3 * time.Second)
+
+	t.Log("Verifying balances after first transfer")
+	walletSDK.TokenStandard().SetPartyID(model.PartyID(externalParty.Party))
+	externalBalanceAfterTransfer, err := walletSDK.TokenStandard().GetBalance(ctx)
+	require.NoError(t, err)
+	require.True(t, externalBalanceAfterTransfer.GreaterThan(decimal.Zero), "external party balance should be greater than zero after transfer, got %s", externalBalanceAfterTransfer.String())
+	t.Logf("External party balance after transfer: %s", externalBalanceAfterTransfer.String())
+
+	t.Log("Creating transfer from external party to receiver")
+	finalTransferAmount := decimal.NewFromFloat(200.0)
+
+	externalHoldings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, false, 100)
+	require.NoError(t, err)
+	require.NotEmpty(t, externalHoldings, "external party should have holding UTXOs")
+
+	var externalInputUtxos []string
+	for _, holding := range externalHoldings {
+		externalInputUtxos = append(externalInputUtxos, holding.ContractID)
+		if holding.Amount.GreaterThanOrEqual(finalTransferAmount) {
+			break
+		}
+	}
+	require.NotEmpty(t, externalInputUtxos, "should have input UTXOs for final transfer")
+
+	finalTransferResult, err := walletSDK.TokenStandard().CreateTransfer(
+		ctx,
+		externalPartyID,
+		model.PartyID(receiverParty.Party),
+		finalTransferAmount,
+		externalHoldings[0].InstrumentID,
+		externalHoldings[0].InstrumentAdmin,
+		externalInputUtxos,
+		"test-transfer-to-receiver",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, finalTransferResult)
+
+	finalSubmitReq := &damlModel.SubmitRequest{
+		Commands: &damlModel.Commands{
+			UserID:    "app-provider",
+			CommandID: fmt.Sprintf("transfer-%d", time.Now().UnixNano()),
+			Commands:  []*damlModel.Command{finalTransferResult.Command},
+			ActAs:     []string{externalParty.Party},
+			ReadAs:    []string{},
+		},
+	}
+
+	_, err = cl.CommandSubmission.Submit(ctx, finalSubmitReq)
+	require.NoError(t, err)
+
+	time.Sleep(3 * time.Second)
+
+	t.Log("Verifying final balances")
+	walletSDK.TokenStandard().SetPartyID(model.PartyID(receiverParty.Party))
+	receiverFinalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	require.NoError(t, err)
+	require.True(t, receiverFinalBalance.GreaterThan(decimal.Zero), "receiver party balance should be greater than zero after final transfer, got %s", receiverFinalBalance.String())
+	t.Logf("Receiver party final balance: %s", receiverFinalBalance.String())
+
+	walletSDK.TokenStandard().SetPartyID(model.PartyID(externalParty.Party))
+	externalFinalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	require.NoError(t, err)
+	t.Logf("External party final balance: %s", externalFinalBalance.String())
+
+	walletSDK.TokenStandard().SetPartyID(model.PartyID(dsoParty.Party))
+	dsoFinalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	require.NoError(t, err)
+	t.Logf("DSO party final balance: %s", dsoFinalBalance.String())
+
+	t.Log("Test completed successfully - mint and transfer operations verified")
 }
 
 func createValidOnboardingTransactions(

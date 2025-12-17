@@ -552,16 +552,19 @@ func (t *TokenStandardController) CreateTap(
 	instrumentAdmin string,
 	instrumentID string,
 ) (*CreateTapResult, error) {
+	amuletRulesTemplateID, amuletRulesContractID, err := t.findAmuletRulesContract(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find AmuletRules contract: %w", err)
+	}
+
 	tapCmd := &damlModel.Command{
 		Command: &damlModel.ExerciseCommand{
-			TemplateID: "Splice.AmuletRules:AmuletRules",
+			TemplateID: amuletRulesTemplateID,
+			ContractID: amuletRulesContractID,
 			Choice:     "AmuletRules_DevNet_Tap",
 			Arguments: map[string]interface{}{
-				"receiver": map[string]interface{}{
-					"_type": "party",
-					"value": string(receiver),
-				},
-				"amount": amount.String(),
+				"receiver": string(receiver),
+				"amount":   amount.String(),
 			},
 		},
 	}
@@ -1577,6 +1580,90 @@ func (t *TokenStandardController) CreateBatchMergeUtility(ctx context.Context) (
 			},
 		},
 	}, nil
+}
+
+func (t *TokenStandardController) findAmuletRulesContract(ctx context.Context) (string, string, error) {
+	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	var spliceAmuletPkgID string
+	for _, pkg := range packages {
+		if pkg.Name == "splice-amulet" {
+			spliceAmuletPkgID = pkg.PackageID
+			break
+		}
+	}
+
+	if spliceAmuletPkgID == "" {
+		return "", "", fmt.Errorf("splice-amulet package not found")
+	}
+
+	possibleTemplateIDs := []string{
+		fmt.Sprintf("%s:Splice.AmuletRules:AmuletRules", spliceAmuletPkgID),
+		fmt.Sprintf("%s:Splice.Amulet:AmuletRules", spliceAmuletPkgID),
+		fmt.Sprintf("%s:Splice.Amulet.AmuletRules:AmuletRules", spliceAmuletPkgID),
+	}
+
+	partyID, err := t.GetPartyID()
+	if err != nil {
+		return "", "", err
+	}
+
+	for _, templateID := range possibleTemplateIDs {
+		t.logger.Info().Str("templateID", templateID).Msg("Trying to find AmuletRules with template ID")
+
+		req := &damlModel.GetActiveContractsRequest{
+			EventFormat: &damlModel.EventFormat{
+				Verbose: true,
+				FiltersByParty: map[string]*damlModel.Filters{
+					string(partyID): {
+						Inclusive: &damlModel.InclusiveFilters{
+							TemplateFilters: []*damlModel.TemplateFilter{
+								{
+									TemplateID:              templateID,
+									IncludeCreatedEventBlob: false,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
+
+	streamLoop:
+		for {
+			select {
+			case resp, ok := <-stream:
+				if !ok {
+					t.logger.Debug().Str("templateID", templateID).Msg("Stream closed, no contract found with this template ID")
+					break streamLoop
+				}
+				if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+					if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+						contract := entry.ActiveContract.CreatedEvent
+						t.logger.Info().
+							Str("templateID", templateID).
+							Str("contractID", contract.ContractID).
+							Msg("Found AmuletRules contract")
+						return templateID, contract.ContractID, nil
+					}
+				}
+			case err := <-errChan:
+				if err != nil {
+					t.logger.Debug().Err(err).Str("templateID", templateID).Msg("Error querying for template, trying next")
+					break streamLoop
+				}
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("AmuletRules contract not found - it may need to be initialized first. Attempted template IDs: %v", possibleTemplateIDs)
 }
 
 func (t *TokenStandardController) CreateMergeDelegationProposal(ctx context.Context, delegate model.PartyID, metadata map[string]interface{}) (*damlModel.Command, error) {
