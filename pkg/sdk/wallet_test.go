@@ -265,18 +265,27 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 		t.Logf("Tap completed at offset: %d", completionOffset)
 	}
 
-	t.Log("Waiting 3 seconds for indexer to process the transaction...")
-	time.Sleep(3 * time.Second)
+	t.Log("Waiting 10 seconds for indexer to process the transaction...")
+	time.Sleep(10 * time.Second)
 
 	t.Log("Checking if Amulet contract is visible to DSO...")
 	amuletTemplateID := fmt.Sprintf("%s:Splice.Amulet:Amulet", spliceAmuletPkgID)
 	t.Logf("Template ID: %s", amuletTemplateID)
 	t.Logf("DSO Party: %s", dsoPartyID)
 
-	dsoBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
+	err = walletSDK.SetPartyID(ctx, dsoPartyID, &synchronizerID)
 	require.NoError(t, err)
+
+	dsoHoldings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
+	require.NoError(t, err)
+	require.Greater(t, len(dsoHoldings), 0, "DSO should have at least one holding after minting")
+
+	dsoBalance := decimal.Zero
+	for _, holding := range dsoHoldings {
+		dsoBalance = dsoBalance.Add(holding.Amount)
+	}
+	t.Logf("DSO balance after mint: %s (from %d holdings)", dsoBalance.String(), len(dsoHoldings))
 	require.True(t, dsoBalance.GreaterThan(decimal.Zero), "DSO balance should be greater than zero after minting, got %s", dsoBalance.String())
-	t.Logf("DSO balance after mint: %s", dsoBalance.String())
 
 	walletSDK.TokenStandard().SetPartyID(model.PartyID(externalParty.Party))
 	externalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)

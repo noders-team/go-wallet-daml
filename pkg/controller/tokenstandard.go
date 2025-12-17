@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -217,7 +218,7 @@ func (t *TokenStandardController) GetBalance(ctx context.Context) (decimal.Decim
 				TemplateFilters: []*damlModel.TemplateFilter{
 					{
 						TemplateID:              "3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1:Splice.Amulet:Amulet",
-						IncludeCreatedEventBlob: false,
+						IncludeCreatedEventBlob: false, // TODO no hardcoded values
 					},
 				},
 			},
@@ -335,15 +336,35 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 		return nil, err
 	}
 
-	req := &damlModel.GetActiveContractsRequest{
-		EventFormat: &damlModel.EventFormat{
+	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	var spliceAmuletPkgID string
+	for _, pkg := range packages {
+		if pkg.Name == "splice-amulet" {
+			spliceAmuletPkgID = pkg.PackageID
+			break
+		}
+	}
+
+	if spliceAmuletPkgID == "" {
+		return nil, fmt.Errorf("splice-amulet package not found")
+	}
+
+	amuletTemplateID := fmt.Sprintf("%s:Splice.Amulet:Amulet", spliceAmuletPkgID)
+
+	req := &damlModel.GetUpdatesRequest{
+		BeginExclusive: 0,
+		UpdateFormat: &damlModel.EventFormat{
 			Verbose: true,
 			FiltersByParty: map[string]*damlModel.Filters{
 				string(partyID): {
 					Inclusive: &damlModel.InclusiveFilters{
-						InterfaceFilters: []*damlModel.InterfaceFilter{
+						TemplateFilters: []*damlModel.TemplateFilter{
 							{
-								InterfaceID:             "Splice.Holding:Holding",
+								TemplateID:              amuletTemplateID,
 								IncludeCreatedEventBlob: true,
 							},
 						},
@@ -353,75 +374,143 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 		},
 	}
 
-	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
+	stream, errChan := t.damlClient.UpdateService.GetUpdates(ctx, req)
 
-	var utxos []*HoldingUTXO
-	currentTime := time.Now()
+	activeContracts := make(map[string]*HoldingUTXO)
+	timeout := time.After(2 * time.Second)
+	updateCount := 0
 
 	for {
 		select {
 		case resp, ok := <-stream:
 			if !ok {
-				if limit > 0 && len(utxos) > limit {
-					return utxos[:limit], nil
+				t.logger.Debug().
+					Int("totalUpdates", updateCount).
+					Int("activeContracts", len(activeContracts)).
+					Msg("GetUpdates stream closed")
+				result := make([]*HoldingUTXO, 0, len(activeContracts))
+				for _, utxo := range activeContracts {
+					result = append(result, utxo)
 				}
-				return utxos, nil
+				if limit > 0 && len(result) > limit {
+					return result[:limit], nil
+				}
+				return result, nil
 			}
-			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
-				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
-					contract := entry.ActiveContract.CreatedEvent
-					args, ok := contract.CreateArguments.(map[string]interface{})
-					if !ok {
-						continue
-					}
 
-					utxo := &HoldingUTXO{
-						ContractID:       contract.ContractID,
-						CreatedEventBlob: contract.CreatedEventBlob,
-					}
+			updateCount++
+			if resp.Update != nil && resp.Update.Transaction != nil {
+				t.logger.Debug().
+					Int("eventCount", len(resp.Update.Transaction.Events)).
+					Str("updateID", resp.Update.Transaction.UpdateID).
+					Msg("Received transaction update")
+				for _, event := range resp.Update.Transaction.Events {
+					if event.Created != nil {
+						contract := event.Created
+						t.logger.Debug().
+							Str("contractID", contract.ContractID).
+							Str("templateID", contract.TemplateID).
+							Msg("Found created Amulet contract")
 
-					if amountVal, ok := args["amount"]; ok {
-						if amountStr, ok := amountVal.(string); ok {
-							utxo.Amount, _ = decimal.NewFromString(amountStr)
+						utxo := &HoldingUTXO{
+							ContractID:       contract.ContractID,
+							CreatedEventBlob: contract.CreatedEventBlob,
+							InstrumentID:     "Amulet",
+							InstrumentAdmin:  string(partyID),
 						}
-					}
 
-					if instrumentIDMap, ok := args["instrumentId"].(map[string]interface{}); ok {
-						if id, ok := instrumentIDMap["id"].(string); ok {
-							utxo.InstrumentID = id
+						jsonBytes, err := json.Marshal(contract.CreateArguments)
+						if err != nil {
+							t.logger.Warn().
+								Err(err).
+								Str("contractID", contract.ContractID).
+								Msg("Failed to marshal CreateArguments to JSON")
+							continue
 						}
-						if admin, ok := instrumentIDMap["admin"].(string); ok {
-							utxo.InstrumentAdmin = admin
+
+						var recordVal map[string]interface{}
+						if err := json.Unmarshal(jsonBytes, &recordVal); err != nil {
+							t.logger.Warn().
+								Err(err).
+								Str("contractID", contract.ContractID).
+								Msg("Failed to unmarshal JSON to map")
+							continue
 						}
-					}
 
-					if owner, ok := args["owner"].(string); ok {
-						utxo.Owner = owner
-					}
+						if fieldsVal, ok := recordVal["fields"].([]interface{}); ok {
+							for _, field := range fieldsVal {
+								if fieldMap, ok := field.(map[string]interface{}); ok {
+									label, _ := fieldMap["label"].(string)
+									value := fieldMap["value"]
 
-					if lockVal, ok := args["lock"].(map[string]interface{}); ok {
-						utxo.Lock = lockVal
-
-						if !includeLocked {
-							if expiresAtVal, ok := lockVal["expiresAt"]; ok {
-								if expiresAtStr, ok := expiresAtVal.(string); ok {
-									if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
-										if expiresAt.After(currentTime) {
-											continue
+									if label == "amount" {
+										if valueMap, ok := value.(map[string]interface{}); ok {
+											if sumMap, ok := valueMap["Sum"].(map[string]interface{}); ok {
+												if recordMap, ok := sumMap["Record"].(map[string]interface{}); ok {
+													if recordFields, ok := recordMap["fields"].([]interface{}); ok {
+														for _, rf := range recordFields {
+															if rfMap, ok := rf.(map[string]interface{}); ok {
+																if rfMap["label"] == "initialAmount" {
+																	if rfValue, ok := rfMap["value"].(map[string]interface{}); ok {
+																		if rfSum, ok := rfValue["Sum"].(map[string]interface{}); ok {
+																			if amountStr, ok := rfSum["Numeric"].(string); ok {
+																				utxo.Amount, _ = decimal.NewFromString(amountStr)
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												} else if numericStr, ok := sumMap["Numeric"].(string); ok {
+													utxo.Amount, _ = decimal.NewFromString(numericStr)
+												}
+											}
+										}
+									} else if label == "owner" {
+										if valueMap, ok := value.(map[string]interface{}); ok {
+											if sumMap, ok := valueMap["Sum"].(map[string]interface{}); ok {
+												if partyStr, ok := sumMap["Party"].(string); ok {
+													utxo.Owner = partyStr
+												}
+											}
 										}
 									}
 								}
 							}
 						}
-					}
 
-					utxos = append(utxos, utxo)
+						activeContracts[contract.ContractID] = utxo
+						t.logger.Debug().
+							Str("contractID", contract.ContractID).
+							Str("amount", utxo.Amount.String()).
+							Int("totalActive", len(activeContracts)).
+							Msg("Added contract to active set")
+					} else if event.Archived != nil {
+						delete(activeContracts, event.Archived.ContractID)
+						t.logger.Debug().
+							Str("contractID", event.Archived.ContractID).
+							Msg("Removed archived contract")
+					}
 				}
 			}
 		case err := <-errChan:
 			if err != nil {
 				return nil, fmt.Errorf("failed to list holding utxos: %w", err)
 			}
+		case <-timeout:
+			t.logger.Debug().
+				Int("activeContracts", len(activeContracts)).
+				Int("totalUpdates", updateCount).
+				Msg("Timeout reached, returning active contracts")
+			result := make([]*HoldingUTXO, 0, len(activeContracts))
+			for _, utxo := range activeContracts {
+				result = append(result, utxo)
+			}
+			if limit > 0 && len(result) > limit {
+				return result[:limit], nil
+			}
+			return result, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -495,6 +584,25 @@ func (t *TokenStandardController) CreateTransfer(
 		return nil, fmt.Errorf("instrumentAdmin is required")
 	}
 
+	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	var spliceAmuletPkgID string
+	for _, pkg := range packages {
+		if pkg.Name == "splice-amulet" {
+			spliceAmuletPkgID = pkg.PackageID
+			break
+		}
+	}
+
+	if spliceAmuletPkgID == "" {
+		return nil, fmt.Errorf("splice-amulet package not found")
+	}
+
+	amuletTemplateID := fmt.Sprintf("%s:Splice.Amulet:Amulet", spliceAmuletPkgID)
+
 	var utxosToUse []string
 	if len(inputUtxos) > 0 {
 		utxosToUse = inputUtxos
@@ -522,7 +630,7 @@ func (t *TokenStandardController) CreateTransfer(
 
 	transferCmd := &damlModel.Command{
 		Command: &damlModel.ExerciseCommand{
-			TemplateID: "Splice.Amulet:Amulet",
+			TemplateID: amuletTemplateID,
 			Choice:     "Amulet_Transfer",
 			Arguments: map[string]interface{}{
 				"sender":   string(sender),
