@@ -9,6 +9,7 @@ import (
 
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
+	"github.com/noders-team/go-daml/pkg/types"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/rs/zerolog"
@@ -558,14 +559,20 @@ func (t *TokenStandardController) CreateTap(
 		return nil, fmt.Errorf("failed to find AmuletRules contract: %w", err)
 	}
 
+	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	if openMiningRoundContractID == "" {
+		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set - OpenMiningRound needs to be bootstrapped first")
+	}
+
 	tapCmd := &damlModel.Command{
 		Command: &damlModel.ExerciseCommand{
 			TemplateID: amuletRulesTemplateID,
 			ContractID: amuletRulesContractID,
 			Choice:     "AmuletRules_DevNet_Tap",
 			Arguments: map[string]interface{}{
-				"receiver": string(receiver),
-				"amount":   amount.String(),
+				"receiver":  types.PARTY(string(receiver)),
+				"amount":    types.NUMERIC(amount.BigInt()),
+				"openRound": types.CONTRACT_ID(openMiningRoundContractID),
 			},
 		},
 	}
@@ -1471,7 +1478,7 @@ func (t *TokenStandardController) CreateAndSubmitTapInternal(
 	}
 
 	cmdID := fmt.Sprintf("tap-%d", time.Now().UnixNano())
-	submitReq := &damlModel.SubmitRequest{
+	submitReq := &damlModel.SubmitAndWaitRequest{
 		Commands: &damlModel.Commands{
 			UserID:    t.userID,
 			CommandID: cmdID,
@@ -1481,13 +1488,15 @@ func (t *TokenStandardController) CreateAndSubmitTapInternal(
 		},
 	}
 
-	_, err = t.damlClient.CommandSubmission.Submit(ctx, submitReq)
+	resp, err := t.damlClient.CommandService.SubmitAndWait(ctx, submitReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to submit tap: %w", err)
 	}
 
 	return map[string]interface{}{
-		"commandId": cmdID,
+		"commandId":        cmdID,
+		"updateId":         resp.UpdateID,
+		"completionOffset": resp.CompletionOffset,
 	}, nil
 }
 

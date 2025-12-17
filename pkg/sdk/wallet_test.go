@@ -184,12 +184,95 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 
 	t.Log("Minting amulets to DSO party")
 	mintAmount := decimal.NewFromFloat(1000.0)
-	_, err = walletSDK.TokenStandard().CreateAndSubmitTapInternal(ctx, dsoPartyID, mintAmount, "", string(dsoPartyID))
+	tapResult, err := walletSDK.TokenStandard().CreateAndSubmitTapInternal(ctx, dsoPartyID, mintAmount, "", string(dsoPartyID))
 	require.NoError(t, err)
+	t.Logf("Tap result: %+v", tapResult)
 
-	time.Sleep(3 * time.Second)
+	if updateID, ok := tapResult["updateId"].(string); ok {
+		t.Logf("Tap transaction updateId: %s", updateID)
+
+		updatesReq := &damlModel.GetUpdatesRequest{
+			BeginExclusive: 0,
+			UpdateFormat: &damlModel.EventFormat{
+				Verbose: true,
+				FiltersByParty: map[string]*damlModel.Filters{
+					string(dsoPartyID): {
+						Inclusive: &damlModel.InclusiveFilters{},
+					},
+				},
+			},
+		}
+
+		updatesStream, updatesErrChan := cl.UpdateService.GetUpdates(ctx, updatesReq)
+
+		timeout := time.After(5 * time.Second)
+		foundTapTx := false
+
+	loop:
+		for {
+			select {
+			case resp, ok := <-updatesStream:
+				if !ok {
+					break loop
+				}
+				if resp.Update != nil && resp.Update.Transaction != nil {
+					tx := resp.Update.Transaction
+					if tx.UpdateID == updateID {
+						foundTapTx = true
+						t.Logf("Found tap transaction with %d events", len(tx.Events))
+						for i, event := range tx.Events {
+							if event.Created != nil {
+								t.Logf("  Event %d: Created contract TemplateID=%s, ContractID=%s",
+									i, event.Created.TemplateID, event.Created.ContractID)
+								if args, ok := event.Created.CreateArguments.(map[string]interface{}); ok {
+									t.Logf("    Full Arguments: %+v", args)
+									if owner, ok := args["owner"]; ok {
+										t.Logf("    Owner: %+v", owner)
+									}
+									if amount, ok := args["amount"]; ok {
+										t.Logf("    Amount: %+v", amount)
+									}
+								}
+								t.Logf("    Signatories: %+v", event.Created.Signatories)
+								t.Logf("    Observers: %+v", event.Created.Observers)
+							} else if event.Archived != nil {
+								t.Logf("  Event %d: Archived contract TemplateID=%s, ContractID=%s",
+									i, event.Archived.TemplateID, event.Archived.ContractID)
+							}
+						}
+						break loop
+					}
+				}
+			case err := <-updatesErrChan:
+				if err != nil {
+					t.Logf("Error getting updates: %v", err)
+					break loop
+				}
+			case <-timeout:
+				t.Logf("Timeout waiting for tap transaction in updates stream")
+				break loop
+			}
+		}
+
+		if !foundTapTx {
+			t.Logf("Warning: Could not find tap transaction in updates stream")
+		}
+	}
 
 	t.Log("Verifying DSO party balance after mint")
+
+	if completionOffset, ok := tapResult["completionOffset"].(int64); ok {
+		t.Logf("Tap completed at offset: %d", completionOffset)
+	}
+
+	t.Log("Waiting 3 seconds for indexer to process the transaction...")
+	time.Sleep(3 * time.Second)
+
+	t.Log("Checking if Amulet contract is visible to DSO...")
+	amuletTemplateID := fmt.Sprintf("%s:Splice.Amulet:Amulet", spliceAmuletPkgID)
+	t.Logf("Template ID: %s", amuletTemplateID)
+	t.Logf("DSO Party: %s", dsoPartyID)
+
 	dsoBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
 	require.NoError(t, err)
 	require.True(t, dsoBalance.GreaterThan(decimal.Zero), "DSO balance should be greater than zero after minting, got %s", dsoBalance.String())

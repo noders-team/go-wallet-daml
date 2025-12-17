@@ -31,23 +31,24 @@ const (
 )
 
 var (
-	once                     sync.Once
-	setupErr                 error
-	damlClient               *client.DamlBindingClient
-	ledgerCtrl               *controller.LedgerController
-	tokenStdCtrl             *controller.TokenStandardController
-	validatorCtrl            *controller.ValidatorController
-	authProvider             *auth.AuthTokenProvider
-	testPartyID              model.PartyID
-	synchronizerID           model.PartyID
-	dsoPartyID               model.PartyID
-	amuletRulesContractID    string
-	amuletRulesTemplateID    string
-	scanProxyBaseURL         string
-	dockerPool               *dockertest.Pool
-	resDaml                  *dockertest.Resource
-	grpcAddr                 string
-	adminAddr                string
+	once                      sync.Once
+	setupErr                  error
+	damlClient                *client.DamlBindingClient
+	ledgerCtrl                *controller.LedgerController
+	tokenStdCtrl              *controller.TokenStandardController
+	validatorCtrl             *controller.ValidatorController
+	authProvider              *auth.AuthTokenProvider
+	testPartyID               model.PartyID
+	synchronizerID            model.PartyID
+	dsoPartyID                model.PartyID
+	amuletRulesContractID     string
+	amuletRulesTemplateID     string
+	openMiningRoundContractID string
+	scanProxyBaseURL          string
+	dockerPool                *dockertest.Pool
+	resDaml                   *dockertest.Resource
+	grpcAddr                  string
+	adminAddr                 string
 )
 
 func Setup(ctx context.Context) error {
@@ -599,6 +600,10 @@ func GetAmuletRulesTemplateID() string {
 	return amuletRulesTemplateID
 }
 
+func GetOpenMiningRoundContractID() string {
+	return openMiningRoundContractID
+}
+
 func uploadDarFiles(ctx context.Context, cl *client.DamlBindingClient) error {
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -1092,6 +1097,96 @@ verifyLoop:
 		Bool("contractFound", contractFound).
 		Str("contractID", contractID).
 		Msg("AmuletRules contracts initialized")
+
+	log.Info().Msg("Bootstrapping OpenMiningRound contracts")
+
+	bootstrapArgs := map[string]interface{}{
+		"amuletPrice":    decimalToNumeric(1.0),
+		"round0Duration": map[string]interface{}{"microseconds": int64(86400000000)},
+		"initialRound":   map[string]interface{}{"_type": "optional", "value": 0},
+	}
+
+	bootstrapCmd := &damlModel.Command{
+		Command: &damlModel.ExerciseCommand{
+			TemplateID: amuletRulesTemplateID,
+			ContractID: amuletRulesContractID,
+			Choice:     "AmuletRules_Bootstrap_Rounds",
+			Arguments:  bootstrapArgs,
+		},
+	}
+
+	bootstrapSubmissionID := fmt.Sprintf("bootstrap-rounds-%d", time.Now().Unix())
+	bootstrapReq := &damlModel.SubmitAndWaitRequest{
+		Commands: &damlModel.Commands{
+			UserID:    testUserID,
+			ActAs:     []string{dsoParty},
+			CommandID: bootstrapSubmissionID,
+			Commands:  []*damlModel.Command{bootstrapCmd},
+		},
+	}
+
+	bootstrapResp, err := cl.CommandService.SubmitAndWait(ctx, bootstrapReq)
+	if err != nil {
+		return fmt.Errorf("failed to bootstrap rounds: %w", err)
+	}
+
+	log.Info().
+		Str("updateID", bootstrapResp.UpdateID).
+		Int64("completionOffset", bootstrapResp.CompletionOffset).
+		Msg("Bootstrap rounds command submitted successfully")
+
+	bootstrapUpdatesReq := &damlModel.GetUpdatesRequest{
+		BeginExclusive: bootstrapResp.CompletionOffset - 1,
+		EndInclusive:   &bootstrapResp.CompletionOffset,
+		UpdateFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				dsoParty: {
+					Inclusive: &damlModel.InclusiveFilters{},
+				},
+			},
+		},
+	}
+
+	bootstrapUpdatesStream, bootstrapUpdatesErrChan := cl.UpdateService.GetUpdates(ctx, bootstrapUpdatesReq)
+
+	openMiningRoundTemplateID := fmt.Sprintf("%s:Splice.Round:OpenMiningRound", spliceAmuletPkgID)
+
+bootstrapLoop:
+	for {
+		select {
+		case resp, ok := <-bootstrapUpdatesStream:
+			if !ok {
+				break bootstrapLoop
+			}
+			if resp.Update != nil && resp.Update.Transaction != nil {
+				tx := resp.Update.Transaction
+				for _, event := range tx.Events {
+					if event.Created != nil && event.Created.TemplateID == openMiningRoundTemplateID {
+						openMiningRoundContractID = event.Created.ContractID
+						log.Info().
+							Str("contractID", openMiningRoundContractID).
+							Str("templateID", openMiningRoundTemplateID).
+							Msg("Stored OpenMiningRound contract ID for later use")
+						os.Setenv("OPEN_MINING_ROUND_CONTRACT_ID", openMiningRoundContractID)
+					}
+				}
+			}
+		case err := <-bootstrapUpdatesErrChan:
+			if err != nil {
+				log.Warn().Err(err).Msg("Error getting bootstrap updates")
+				break bootstrapLoop
+			}
+		case <-time.After(2 * time.Second):
+			break bootstrapLoop
+		}
+	}
+
+	if openMiningRoundContractID == "" {
+		return fmt.Errorf("failed to extract OpenMiningRound contract ID from bootstrap transaction")
+	}
+
+	log.Info().Str("openMiningRoundCid", openMiningRoundContractID).Msg("OpenMiningRound bootstrapped successfully")
 
 	return nil
 }
