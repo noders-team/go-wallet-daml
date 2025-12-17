@@ -98,6 +98,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	grpcAddr := testutil.GetGrpcAddr()
 	scanProxyURL := testutil.GetScanProxyBaseURL()
 	synchronizerID := testutil.GetSynchronizerID()
+	dsoPartyID := testutil.GetDsoPartyID()
 
 	walletSDK := sdk.NewWalletSDK()
 	walletSDK.Configure(sdk.Config{
@@ -145,21 +146,12 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	}
 	require.NotEmpty(t, spliceAmuletPkgID, "splice-amulet package not found")
 
-	dsoParty, err := cl.PartyMng.AllocateParty(ctx, "dso-"+uuid.New().String()[:8], nil, "")
-	require.NoError(t, err)
-
-	_, err = cl.UserMng.GrantUserRights(ctx, "app-provider", "", []*damlModel.Right{
-		{Type: damlModel.CanActAs{Party: dsoParty.Party}},
-		{Type: damlModel.CanReadAs{Party: dsoParty.Party}},
-	})
-	require.NoError(t, err)
-
-	t.Logf("DSO Party: %s", dsoParty.Party)
+	t.Logf("DSO Party: %s", dsoPartyID)
 	t.Logf("Synchronizer ID: %s", synchronizerID)
 
-	walletSDK.TokenStandard().SetPartyID(model.PartyID(dsoParty.Party))
+	walletSDK.TokenStandard().SetPartyID(dsoPartyID)
 	walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
-	walletSDK.Validator().SetPartyID(model.PartyID(dsoParty.Party))
+	walletSDK.Validator().SetPartyID(dsoPartyID)
 	walletSDK.Validator().SetSynchronizerID(synchronizerID)
 
 	retrievedParty, err := walletSDK.TokenStandard().GetPartyID()
@@ -192,7 +184,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 
 	t.Log("Minting amulets to DSO party")
 	mintAmount := decimal.NewFromFloat(1000.0)
-	_, err = walletSDK.TokenStandard().CreateAndSubmitTapInternal(ctx, model.PartyID(dsoParty.Party), mintAmount, "", dsoParty.Party)
+	_, err = walletSDK.TokenStandard().CreateAndSubmitTapInternal(ctx, dsoPartyID, mintAmount, "", string(dsoPartyID))
 	require.NoError(t, err)
 
 	time.Sleep(3 * time.Second)
@@ -213,7 +205,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, receiverBalance.IsZero(), "receiver party balance should be zero, got %s", receiverBalance.String())
 
-	walletSDK.TokenStandard().SetPartyID(model.PartyID(dsoParty.Party))
+	walletSDK.TokenStandard().SetPartyID(dsoPartyID)
 
 	t.Log("Creating transfer from DSO to external party")
 	transferAmount := decimal.NewFromFloat(500.0)
@@ -233,7 +225,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 
 	transferResult, err := walletSDK.TokenStandard().CreateTransfer(
 		ctx,
-		model.PartyID(dsoParty.Party),
+		dsoPartyID,
 		externalPartyID,
 		transferAmount,
 		holdings[0].InstrumentID,
@@ -249,7 +241,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 			UserID:    "app-provider",
 			CommandID: fmt.Sprintf("transfer-%d", time.Now().UnixNano()),
 			Commands:  []*damlModel.Command{transferResult.Command},
-			ActAs:     []string{dsoParty.Party},
+			ActAs:     []string{string(dsoPartyID)},
 			ReadAs:    []string{},
 		},
 	}
@@ -322,7 +314,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("External party final balance: %s", externalFinalBalance.String())
 
-	walletSDK.TokenStandard().SetPartyID(model.PartyID(dsoParty.Party))
+	walletSDK.TokenStandard().SetPartyID(dsoPartyID)
 	dsoFinalBalance, err := walletSDK.TokenStandard().GetBalance(ctx)
 	require.NoError(t, err)
 	t.Logf("DSO party final balance: %s", dsoFinalBalance.String())

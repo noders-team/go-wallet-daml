@@ -31,20 +31,23 @@ const (
 )
 
 var (
-	once             sync.Once
-	setupErr         error
-	damlClient       *client.DamlBindingClient
-	ledgerCtrl       *controller.LedgerController
-	tokenStdCtrl     *controller.TokenStandardController
-	validatorCtrl    *controller.ValidatorController
-	authProvider     *auth.AuthTokenProvider
-	testPartyID      model.PartyID
-	synchronizerID   model.PartyID
-	scanProxyBaseURL string
-	dockerPool       *dockertest.Pool
-	resDaml          *dockertest.Resource
-	grpcAddr         string
-	adminAddr        string
+	once                     sync.Once
+	setupErr                 error
+	damlClient               *client.DamlBindingClient
+	ledgerCtrl               *controller.LedgerController
+	tokenStdCtrl             *controller.TokenStandardController
+	validatorCtrl            *controller.ValidatorController
+	authProvider             *auth.AuthTokenProvider
+	testPartyID              model.PartyID
+	synchronizerID           model.PartyID
+	dsoPartyID               model.PartyID
+	amuletRulesContractID    string
+	amuletRulesTemplateID    string
+	scanProxyBaseURL         string
+	dockerPool               *dockertest.Pool
+	resDaml                  *dockertest.Resource
+	grpcAddr                 string
+	adminAddr                string
 )
 
 func Setup(ctx context.Context) error {
@@ -207,6 +210,8 @@ func Setup(ctx context.Context) error {
 			dsoParty = dsoPartyResp.Party
 			log.Info().Str("dsoParty", dsoParty).Msg("DSO party allocated")
 		}
+
+		dsoPartyID = model.PartyID(dsoParty)
 
 		rights := []*damlModel.Right{
 			{Type: damlModel.CanActAs{Party: dsoParty}},
@@ -566,6 +571,10 @@ func GetSynchronizerID() model.PartyID {
 	return synchronizerID
 }
 
+func GetDsoPartyID() model.PartyID {
+	return dsoPartyID
+}
+
 func GetGrpcAddr() string {
 	return grpcAddr
 }
@@ -580,6 +589,14 @@ func GetScanProxyBaseURL() string {
 
 func GetClient() *client.DamlBindingClient {
 	return damlClient
+}
+
+func GetAmuletRulesContractID() string {
+	return amuletRulesContractID
+}
+
+func GetAmuletRulesTemplateID() string {
+	return amuletRulesTemplateID
 }
 
 func uploadDarFiles(ctx context.Context, cl *client.DamlBindingClient) error {
@@ -675,7 +692,7 @@ func initializeAmuletRules(ctx context.Context, cl *client.DamlBindingClient, ds
 		return fmt.Errorf("splice-amulet package not found")
 	}
 
-	amuletRulesTemplateID := fmt.Sprintf("%s:Splice.AmuletRules:AmuletRules", spliceAmuletPkgID)
+	amuletRulesTemplateID = fmt.Sprintf("%s:Splice.AmuletRules:AmuletRules", spliceAmuletPkgID)
 	extAmuletRulesTemplateID := fmt.Sprintf("%s:Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules", spliceAmuletPkgID)
 
 	// First, check if contract already exists
@@ -834,12 +851,85 @@ checkLoop:
 		},
 	}
 
-	resp, err := cl.CommandService.SubmitAndWait(ctx, submitReq)
+	amuletRulesResp, err := cl.CommandService.SubmitAndWait(ctx, submitReq)
 	if err != nil {
 		return fmt.Errorf("failed to create AmuletRules: %w", err)
 	}
 
-	log.Info().Msg("AmuletRules contract created")
+	log.Info().
+		Str("updateID", amuletRulesResp.UpdateID).
+		Int64("completionOffset", amuletRulesResp.CompletionOffset).
+		Msg("AmuletRules contract created successfully")
+
+	getUpdatesReq := &damlModel.GetUpdatesRequest{
+		BeginExclusive: amuletRulesResp.CompletionOffset - 1,
+		EndInclusive:   &amuletRulesResp.CompletionOffset,
+		UpdateFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				dsoParty: {
+					Inclusive: &damlModel.InclusiveFilters{},
+				},
+			},
+		},
+	}
+
+	updatesStream, updatesErrChan := cl.UpdateService.GetUpdates(ctx, getUpdatesReq)
+
+updatesLoop:
+	for {
+		select {
+		case resp, ok := <-updatesStream:
+			if !ok {
+				break updatesLoop
+			}
+			if resp.Update != nil && resp.Update.Transaction != nil {
+				tx := resp.Update.Transaction
+				log.Info().
+					Str("updateID", tx.UpdateID).
+					Str("commandID", tx.CommandID).
+					Int("eventCount", len(tx.Events)).
+					Msg("Transaction found")
+
+				for i, event := range tx.Events {
+					if event.Created != nil {
+						log.Info().
+							Int("eventIndex", i).
+							Str("contractID", event.Created.ContractID).
+							Str("templateID", event.Created.TemplateID).
+							Str("signatories", fmt.Sprintf("%v", event.Created.Signatories)).
+							Str("observers", fmt.Sprintf("%v", event.Created.Observers)).
+							Interface("arguments", event.Created.CreateArguments).
+							Msg("Contract created in transaction")
+
+						if event.Created.TemplateID == amuletRulesTemplateID {
+							amuletRulesContractID = event.Created.ContractID
+							log.Info().
+								Str("contractID", amuletRulesContractID).
+								Str("templateID", amuletRulesTemplateID).
+								Msg("Stored AmuletRules contract ID for later use")
+
+							os.Setenv("AMULET_RULES_TEMPLATE_ID", amuletRulesTemplateID)
+							os.Setenv("AMULET_RULES_CONTRACT_ID", amuletRulesContractID)
+						}
+					} else if event.Archived != nil {
+						log.Info().
+							Int("eventIndex", i).
+							Str("contractID", event.Archived.ContractID).
+							Str("templateID", event.Archived.TemplateID).
+							Msg("Contract archived in transaction")
+					}
+				}
+			}
+		case err := <-updatesErrChan:
+			if err != nil {
+				log.Warn().Err(err).Msg("Error getting updates")
+				break updatesLoop
+			}
+		case <-time.After(2 * time.Second):
+			break updatesLoop
+		}
+	}
 
 	extAmuletRulesArgs := map[string]interface{}{
 		"dso": types.PARTY(dsoParty),
@@ -869,9 +959,138 @@ checkLoop:
 
 	log.Info().Msg("ExternalPartyAmuletRules contract created")
 
+	time.Sleep(2 * time.Second)
+
+	verifyReq := &damlModel.GetActiveContractsRequest{
+		EventFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				dsoParty: {
+					Inclusive: &damlModel.InclusiveFilters{
+						TemplateFilters: []*damlModel.TemplateFilter{
+							{
+								TemplateID:              amuletRulesTemplateID,
+								IncludeCreatedEventBlob: false,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	verifyStream, verifyErrChan := cl.StateService.GetActiveContracts(ctx, verifyReq)
+
+	contractFound := false
+	contractID := ""
+verifyLoop:
+	for {
+		select {
+		case resp, ok := <-verifyStream:
+			if !ok {
+				break verifyLoop
+			}
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					contractFound = true
+					contractID = entry.ActiveContract.CreatedEvent.ContractID
+					log.Info().
+						Str("contractID", contractID).
+						Str("templateID", entry.ActiveContract.CreatedEvent.TemplateID).
+						Msg("Verified AmuletRules contract exists")
+				}
+			}
+		case err := <-verifyErrChan:
+			if err != nil {
+				log.Warn().Err(err).Msg("Error verifying AmuletRules contract")
+				break verifyLoop
+			}
+		case <-time.After(3 * time.Second):
+			break verifyLoop
+		}
+	}
+
+	if !contractFound {
+		log.Warn().
+			Str("dsoParty", dsoParty).
+			Str("templateID", amuletRulesTemplateID).
+			Msg("Contract not found with DSO party filter - trying query with participant_admin")
+
+		allPartiesResp, err := cl.PartyMng.ListKnownParties(ctx, "", 1000, "")
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to list known parties")
+		} else {
+			log.Info().Int("partyCount", len(allPartiesResp.PartyDetails)).Msg("Total known parties")
+
+			for _, p := range allPartiesResp.PartyDetails {
+				log.Debug().
+					Str("party", p.Party).
+					Bool("isLocal", p.IsLocal).
+					Msg("Known party")
+
+				adminReq := &damlModel.GetActiveContractsRequest{
+					EventFormat: &damlModel.EventFormat{
+						Verbose: true,
+						FiltersByParty: map[string]*damlModel.Filters{
+							p.Party: {
+								Inclusive: &damlModel.InclusiveFilters{
+									TemplateFilters: []*damlModel.TemplateFilter{
+										{
+											TemplateID:              amuletRulesTemplateID,
+											IncludeCreatedEventBlob: false,
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+
+				adminStream, adminErrChan := cl.StateService.GetActiveContracts(ctx, adminReq)
+
+			adminLoop:
+				for {
+					select {
+					case resp, ok := <-adminStream:
+						if !ok {
+							break adminLoop
+						}
+						if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+							if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+								log.Info().
+									Str("foundWithParty", p.Party).
+									Str("contractID", entry.ActiveContract.CreatedEvent.ContractID).
+									Str("templateID", entry.ActiveContract.CreatedEvent.TemplateID).
+									Interface("arguments", entry.ActiveContract.CreatedEvent.CreateArguments).
+									Str("signatories", fmt.Sprintf("%v", entry.ActiveContract.CreatedEvent.Signatories)).
+									Str("observers", fmt.Sprintf("%v", entry.ActiveContract.CreatedEvent.Observers)).
+									Msg("FOUND AmuletRules contract with different party!")
+								contractFound = true
+								contractID = entry.ActiveContract.CreatedEvent.ContractID
+								break adminLoop
+							}
+						}
+					case err := <-adminErrChan:
+						if err != nil {
+							break adminLoop
+						}
+					case <-time.After(500 * time.Millisecond):
+						break adminLoop
+					}
+				}
+
+				if contractFound {
+					break
+				}
+			}
+		}
+	}
+
 	log.Info().
 		Str("dsoParty", dsoParty).
 		Str("amuletRulesTemplateID", amuletRulesTemplateID).
+		Bool("contractFound", contractFound).
+		Str("contractID", contractID).
 		Msg("AmuletRules contracts initialized")
 
 	return nil

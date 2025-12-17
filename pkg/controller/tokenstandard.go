@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -1583,6 +1584,25 @@ func (t *TokenStandardController) CreateBatchMergeUtility(ctx context.Context) (
 }
 
 func (t *TokenStandardController) findAmuletRulesContract(ctx context.Context) (string, string, error) {
+	testUtilTemplateID := ""
+	testUtilContractID := ""
+
+	type testUtilGetter interface {
+		GetAmuletRulesTemplateID() string
+		GetAmuletRulesContractID() string
+	}
+
+	testUtilTemplateID = os.Getenv("AMULET_RULES_TEMPLATE_ID")
+	testUtilContractID = os.Getenv("AMULET_RULES_CONTRACT_ID")
+
+	if testUtilTemplateID != "" && testUtilContractID != "" {
+		t.logger.Info().
+			Str("templateID", testUtilTemplateID).
+			Str("contractID", testUtilContractID).
+			Msg("Using AmuletRules contract from environment variables")
+		return testUtilTemplateID, testUtilContractID, nil
+	}
+
 	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to list packages: %w", err)
@@ -1612,7 +1632,10 @@ func (t *TokenStandardController) findAmuletRulesContract(ctx context.Context) (
 	}
 
 	for _, templateID := range possibleTemplateIDs {
-		t.logger.Info().Str("templateID", templateID).Msg("Trying to find AmuletRules with template ID")
+		t.logger.Info().
+			Str("templateID", templateID).
+			Str("partyID", string(partyID)).
+			Msg("Trying to find AmuletRules with template ID")
 
 		req := &damlModel.GetActiveContractsRequest{
 			EventFormat: &damlModel.EventFormat{
@@ -1634,12 +1657,23 @@ func (t *TokenStandardController) findAmuletRulesContract(ctx context.Context) (
 
 		stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
 
+		var foundContract *damlModel.CreatedEvent
 	streamLoop:
 		for {
 			select {
 			case resp, ok := <-stream:
 				if !ok {
-					t.logger.Debug().Str("templateID", templateID).Msg("Stream closed, no contract found with this template ID")
+					if foundContract != nil {
+						t.logger.Info().
+							Str("templateID", templateID).
+							Str("contractID", foundContract.ContractID).
+							Msg("Found AmuletRules contract")
+						return templateID, foundContract.ContractID, nil
+					}
+					t.logger.Debug().
+						Str("templateID", templateID).
+						Str("partyID", string(partyID)).
+						Msg("Stream closed, no contract found with this template ID")
 					break streamLoop
 				}
 				if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
@@ -1648,13 +1682,18 @@ func (t *TokenStandardController) findAmuletRulesContract(ctx context.Context) (
 						t.logger.Info().
 							Str("templateID", templateID).
 							Str("contractID", contract.ContractID).
-							Msg("Found AmuletRules contract")
-						return templateID, contract.ContractID, nil
+							Str("partyID", string(partyID)).
+							Msg("Received contract from stream")
+						foundContract = contract
 					}
 				}
 			case err := <-errChan:
 				if err != nil {
-					t.logger.Debug().Err(err).Str("templateID", templateID).Msg("Error querying for template, trying next")
+					t.logger.Warn().
+						Err(err).
+						Str("templateID", templateID).
+						Str("partyID", string(partyID)).
+						Msg("Error querying for template, trying next")
 					break streamLoop
 				}
 			case <-ctx.Done():
