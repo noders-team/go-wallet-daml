@@ -966,53 +966,10 @@ updatesLoop:
 
 	time.Sleep(2 * time.Second)
 
-	verifyReq := &damlModel.GetActiveContractsRequest{
-		EventFormat: &damlModel.EventFormat{
-			Verbose: true,
-			FiltersByParty: map[string]*damlModel.Filters{
-				dsoParty: {
-					Inclusive: &damlModel.InclusiveFilters{
-						TemplateFilters: []*damlModel.TemplateFilter{
-							{
-								TemplateID:              amuletRulesTemplateID,
-								IncludeCreatedEventBlob: false,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	verifyStream, verifyErrChan := cl.StateService.GetActiveContracts(ctx, verifyReq)
-
 	contractFound := false
-	contractID := ""
-verifyLoop:
-	for {
-		select {
-		case resp, ok := <-verifyStream:
-			if !ok {
-				break verifyLoop
-			}
-			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
-				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
-					contractFound = true
-					contractID = entry.ActiveContract.CreatedEvent.ContractID
-					log.Info().
-						Str("contractID", contractID).
-						Str("templateID", entry.ActiveContract.CreatedEvent.TemplateID).
-						Msg("Verified AmuletRules contract exists")
-				}
-			}
-		case err := <-verifyErrChan:
-			if err != nil {
-				log.Warn().Err(err).Msg("Error verifying AmuletRules contract")
-				break verifyLoop
-			}
-		case <-time.After(3 * time.Second):
-			break verifyLoop
-		}
+	contractID, err := getContractIDByTemplateID(ctx, cl, dsoParty, amuletRulesTemplateID)
+	if err == nil {
+		contractFound = true
 	}
 
 	if !contractFound {
@@ -1031,62 +988,12 @@ verifyLoop:
 				log.Debug().
 					Str("party", p.Party).
 					Bool("isLocal", p.IsLocal).
-					Msg("Known party")
-
-				adminReq := &damlModel.GetActiveContractsRequest{
-					EventFormat: &damlModel.EventFormat{
-						Verbose: true,
-						FiltersByParty: map[string]*damlModel.Filters{
-							p.Party: {
-								Inclusive: &damlModel.InclusiveFilters{
-									TemplateFilters: []*damlModel.TemplateFilter{
-										{
-											TemplateID:              amuletRulesTemplateID,
-											IncludeCreatedEventBlob: false,
-										},
-									},
-								},
-							},
-						},
-					},
+					Msg("known party")
+				contractIDFound, err := getContractIDByTemplateID(ctx, cl, p.Party, amuletRulesTemplateID)
+				if err != nil {
+					continue
 				}
-
-				adminStream, adminErrChan := cl.StateService.GetActiveContracts(ctx, adminReq)
-
-			adminLoop:
-				for {
-					select {
-					case resp, ok := <-adminStream:
-						if !ok {
-							break adminLoop
-						}
-						if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
-							if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
-								log.Info().
-									Str("foundWithParty", p.Party).
-									Str("contractID", entry.ActiveContract.CreatedEvent.ContractID).
-									Str("templateID", entry.ActiveContract.CreatedEvent.TemplateID).
-									Interface("arguments", entry.ActiveContract.CreatedEvent.CreateArguments).
-									Str("signatories", fmt.Sprintf("%v", entry.ActiveContract.CreatedEvent.Signatories)).
-									Str("observers", fmt.Sprintf("%v", entry.ActiveContract.CreatedEvent.Observers)).
-									Msg("FOUND AmuletRules contract with different party!")
-								contractFound = true
-								contractID = entry.ActiveContract.CreatedEvent.ContractID
-								break adminLoop
-							}
-						}
-					case err := <-adminErrChan:
-						if err != nil {
-							break adminLoop
-						}
-					case <-time.After(500 * time.Millisecond):
-						break adminLoop
-					}
-				}
-
-				if contractFound {
-					break
-				}
+				contractID = contractIDFound
 			}
 		}
 	}
@@ -1189,4 +1096,54 @@ bootstrapLoop:
 	log.Info().Str("openMiningRoundCid", openMiningRoundContractID).Msg("OpenMiningRound bootstrapped successfully")
 
 	return nil
+}
+
+func getContractIDByTemplateID(ctx context.Context, cl *client.DamlBindingClient, party, templateID string) (string, error) {
+	verifyReq := &damlModel.GetActiveContractsRequest{
+		EventFormat: &damlModel.EventFormat{
+			Verbose: true,
+			FiltersByParty: map[string]*damlModel.Filters{
+				party: {
+					Inclusive: &damlModel.InclusiveFilters{
+						TemplateFilters: []*damlModel.TemplateFilter{
+							{
+								TemplateID:              templateID,
+								IncludeCreatedEventBlob: false,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	streamCh, errCh := cl.StateService.GetActiveContracts(ctx, verifyReq)
+
+	for {
+		select {
+		case resp, ok := <-streamCh:
+			if !ok {
+				return "", fmt.Errorf("contract not found")
+			}
+			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+					contractID := entry.ActiveContract.CreatedEvent.ContractID
+					log.Info().
+						Str("contractID", contractID).
+						Str("templateID", entry.ActiveContract.CreatedEvent.TemplateID).
+						Msg("verified contract exists")
+					return contractID, nil
+				}
+			}
+		case err := <-errCh:
+			if err != nil {
+				log.Warn().Err(err).Msg("error verifying contract")
+				return "", err
+			}
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(3 * time.Second):
+			return "", fmt.Errorf("timeout waiting for contract")
+		}
+	}
 }
