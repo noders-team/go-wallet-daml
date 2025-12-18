@@ -841,61 +841,65 @@ func initializeAmuletRules(ctx context.Context, cl *client.DamlBindingClient, ds
 	}
 
 	updatesStream, updatesErrChan := cl.UpdateService.GetUpdates(ctx, getUpdatesReq)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case resp, ok := <-updatesStream:
+				if !ok {
+					return
+				}
+				if resp.Update != nil && resp.Update.Transaction != nil {
+					tx := resp.Update.Transaction
+					log.Info().
+						Str("updateID", tx.UpdateID).
+						Str("commandID", tx.CommandID).
+						Int("eventCount", len(tx.Events)).
+						Msg("transaction found")
 
-updatesLoop:
-	for {
-		select {
-		case resp, ok := <-updatesStream:
-			if !ok {
-				break updatesLoop
-			}
-			if resp.Update != nil && resp.Update.Transaction != nil {
-				tx := resp.Update.Transaction
-				log.Info().
-					Str("updateID", tx.UpdateID).
-					Str("commandID", tx.CommandID).
-					Int("eventCount", len(tx.Events)).
-					Msg("Transaction found")
-
-				for i, event := range tx.Events {
-					if event.Created != nil {
-						log.Info().
-							Int("eventIndex", i).
-							Str("contractID", event.Created.ContractID).
-							Str("templateID", event.Created.TemplateID).
-							Str("signatories", fmt.Sprintf("%v", event.Created.Signatories)).
-							Str("observers", fmt.Sprintf("%v", event.Created.Observers)).
-							Interface("arguments", event.Created.CreateArguments).
-							Msg("Contract created in transaction")
-
-						if event.Created.TemplateID == amuletRulesTemplateID {
-							amuletRulesContractID = event.Created.ContractID
+					for i, event := range tx.Events {
+						if event.Created != nil {
 							log.Info().
-								Str("contractID", amuletRulesContractID).
-								Str("templateID", amuletRulesTemplateID).
-								Msg("Stored AmuletRules contract ID for later use")
+								Int("eventIndex", i).
+								Str("contractID", event.Created.ContractID).
+								Str("templateID", event.Created.TemplateID).
+								Str("signatories", fmt.Sprintf("%v", event.Created.Signatories)).
+								Str("observers", fmt.Sprintf("%v", event.Created.Observers)).
+								Interface("arguments", event.Created.CreateArguments).
+								Msg("contract created in transaction")
 
-							os.Setenv("AMULET_RULES_TEMPLATE_ID", amuletRulesTemplateID)
-							os.Setenv("AMULET_RULES_CONTRACT_ID", amuletRulesContractID)
+							if event.Created.TemplateID == amuletRulesTemplateID {
+								amuletRulesContractID = event.Created.ContractID
+								log.Info().
+									Str("contractID", amuletRulesContractID).
+									Str("templateID", amuletRulesTemplateID).
+									Msg("stored AmuletRules contract ID for later use")
+
+								os.Setenv("AMULET_RULES_TEMPLATE_ID", amuletRulesTemplateID)
+								os.Setenv("AMULET_RULES_CONTRACT_ID", amuletRulesContractID)
+							}
+						} else if event.Archived != nil {
+							log.Info().
+								Int("eventIndex", i).
+								Str("contractID", event.Archived.ContractID).
+								Str("templateID", event.Archived.TemplateID).
+								Msg("contract archived in transaction")
 						}
-					} else if event.Archived != nil {
-						log.Info().
-							Int("eventIndex", i).
-							Str("contractID", event.Archived.ContractID).
-							Str("templateID", event.Archived.TemplateID).
-							Msg("Contract archived in transaction")
 					}
 				}
+			case err := <-updatesErrChan:
+				if err != nil {
+					log.Warn().Err(err).Msg("Error getting updates")
+					return
+				}
+			case <-time.After(2 * time.Second):
+				return
 			}
-		case err := <-updatesErrChan:
-			if err != nil {
-				log.Warn().Err(err).Msg("Error getting updates")
-				break updatesLoop
-			}
-		case <-time.After(2 * time.Second):
-			break updatesLoop
 		}
-	}
+	}()
+	wg.Wait()
 
 	extAmuletRulesArgs := map[string]interface{}{
 		"dso": types.PARTY(dsoParty),
@@ -952,6 +956,7 @@ updatesLoop:
 					Msg("known party")
 				contractIDFound, err := getContractIDByTemplateID(ctx, cl, p.Party, amuletRulesTemplateID)
 				if err != nil {
+					log.Err(err).Msgf("failed to get contract ID for party %s", p.Party)
 					continue
 				}
 				contractID = contractIDFound
@@ -1019,7 +1024,8 @@ updatesLoop:
 	bootstrapUpdatesStream, bootstrapUpdatesErrChan := cl.UpdateService.GetUpdates(ctx, bootstrapUpdatesReq)
 
 	openMiningRoundTemplateID := fmt.Sprintf("%s:Splice.Round:OpenMiningRound", spliceAmuletPkgID)
-	wg := sync.WaitGroup{}
+
+	wg = sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

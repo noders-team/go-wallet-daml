@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,7 +157,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 
 	retrievedParty, err := walletSDK.TokenStandard().GetPartyID()
 	require.NoError(t, err)
-	t.Logf("Retrieved Party ID from controller: %s", retrievedParty)
+	t.Logf("retrieved Party ID from controller: %s", retrievedParty)
 
 	balance, err := walletSDK.TokenStandard().GetBalance(ctx)
 	require.NoError(t, err)
@@ -207,62 +208,54 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 
 		timeout := time.After(5 * time.Second)
 		foundTapTx := false
-
-	loop:
-		for {
-			select {
-			case resp, ok := <-updatesStream:
-				if !ok {
-					break loop
-				}
-				if resp.Update != nil && resp.Update.Transaction != nil {
-					tx := resp.Update.Transaction
-					if tx.UpdateID == updateID {
-						foundTapTx = true
-						t.Logf("Found tap transaction with %d events", len(tx.Events))
-						for i, event := range tx.Events {
-							if event.Created != nil {
-								t.Logf("  Event %d: Created contract TemplateID=%s, ContractID=%s",
-									i, event.Created.TemplateID, event.Created.ContractID)
-								if args, ok := event.Created.CreateArguments.(map[string]interface{}); ok {
-									t.Logf("    Full Arguments: %+v", args)
-									if owner, ok := args["owner"]; ok {
-										t.Logf("    Owner: %+v", owner)
-									}
-									if amount, ok := args["amount"]; ok {
-										t.Logf("    Amount: %+v", amount)
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case resp, ok := <-updatesStream:
+					if !ok {
+						return
+					}
+					if resp.Update != nil && resp.Update.Transaction != nil {
+						tx := resp.Update.Transaction
+						if tx.UpdateID == updateID {
+							foundTapTx = true
+							t.Logf("Found tap transaction with %d events", len(tx.Events))
+							for i, event := range tx.Events {
+								if event.Created != nil {
+									t.Logf("  Event %d: Created contract TemplateID=%s, ContractID=%s",
+										i, event.Created.TemplateID, event.Created.ContractID)
+									if args, ok := event.Created.CreateArguments.(map[string]interface{}); ok {
+										t.Logf("    Full Arguments: %+v", args)
 									}
 								}
-								t.Logf("    Signatories: %+v", event.Created.Signatories)
-								t.Logf("    Observers: %+v", event.Created.Observers)
-							} else if event.Archived != nil {
-								t.Logf("  Event %d: Archived contract TemplateID=%s, ContractID=%s",
-									i, event.Archived.TemplateID, event.Archived.ContractID)
 							}
+							return
 						}
-						break loop
 					}
+				case err := <-updatesErrChan:
+					if err != nil {
+						t.Logf("Error getting updates: %v", err)
+						return
+					}
+				case <-timeout:
+					t.Logf("Timeout waiting for tap transaction in updates stream")
+					return
 				}
-			case err := <-updatesErrChan:
-				if err != nil {
-					t.Logf("Error getting updates: %v", err)
-					break loop
-				}
-			case <-timeout:
-				t.Logf("Timeout waiting for tap transaction in updates stream")
-				break loop
 			}
-		}
+		}()
 
 		if !foundTapTx {
-			t.Logf("Warning: Could not find tap transaction in updates stream")
+			t.Logf("warning: Could not find tap transaction in updates stream")
 		}
 	}
 
-	t.Log("Verifying DSO party balance after mint")
+	t.Log("verifying DSO party balance after mint")
 
 	if completionOffset, ok := tapResult["completionOffset"].(int64); ok {
-		t.Logf("Tap completed at offset: %d", completionOffset)
+		t.Logf("tap completed at offset: %d", completionOffset)
 	}
 
 	t.Log("Waiting 10 seconds for indexer to process the transaction...")
@@ -360,51 +353,54 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	updatesStream, updatesErrChan := cl.UpdateService.GetUpdates(ctx, updatesReq)
 	timeout := time.After(5 * time.Second)
 	foundTransferTx := false
-
-transferLoop:
-	for {
-		select {
-		case resp, ok := <-updatesStream:
-			if !ok {
-				break transferLoop
-			}
-			if resp.Update != nil && resp.Update.Transaction != nil {
-				tx := resp.Update.Transaction
-				if tx.UpdateID == transferResp.UpdateID {
-					foundTransferTx = true
-					t.Logf("Found transfer transaction with %d events", len(tx.Events))
-					for i, event := range tx.Events {
-						if event.Created != nil {
-							t.Logf("  Event %d: Created contract TemplateID=%s, ContractID=%s",
-								i, event.Created.TemplateID, event.Created.ContractID)
-							if args, ok := event.Created.CreateArguments.(map[string]interface{}); ok {
-								if owner, ok := args["owner"]; ok {
-									t.Logf("    Owner: %+v", owner)
-								}
-								if amount, ok := args["amount"]; ok {
-									t.Logf("    Amount: %+v", amount)
-								}
-							}
-							t.Logf("    Signatories: %+v", event.Created.Signatories)
-							t.Logf("    Observers: %+v", event.Created.Observers)
-						} else if event.Archived != nil {
-							t.Logf("  Event %d: Archived contract TemplateID=%s, ContractID=%s",
-								i, event.Archived.TemplateID, event.Archived.ContractID)
-						}
-					}
-					break transferLoop
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case resp, ok := <-updatesStream:
+				if !ok {
+					return
 				}
+				if resp.Update != nil && resp.Update.Transaction != nil {
+					tx := resp.Update.Transaction
+					if tx.UpdateID == transferResp.UpdateID {
+						foundTransferTx = true
+						t.Logf("Found transfer transaction with %d events", len(tx.Events))
+						for i, event := range tx.Events {
+							if event.Created != nil {
+								t.Logf("  Event %d: Created contract TemplateID=%s, ContractID=%s",
+									i, event.Created.TemplateID, event.Created.ContractID)
+								if args, ok := event.Created.CreateArguments.(map[string]interface{}); ok {
+									if owner, ok := args["owner"]; ok {
+										t.Logf("    Owner: %+v", owner)
+									}
+									if amount, ok := args["amount"]; ok {
+										t.Logf("    Amount: %+v", amount)
+									}
+								}
+								t.Logf("    Signatories: %+v", event.Created.Signatories)
+								t.Logf("    Observers: %+v", event.Created.Observers)
+							} else if event.Archived != nil {
+								t.Logf("  Event %d: Archived contract TemplateID=%s, ContractID=%s",
+									i, event.Archived.TemplateID, event.Archived.ContractID)
+							}
+						}
+						return
+					}
+				}
+			case err := <-updatesErrChan:
+				if err != nil {
+					t.Logf("Error getting updates: %v", err)
+					return
+				}
+			case <-timeout:
+				t.Logf("Timeout waiting for transfer transaction in updates stream")
+				return
 			}
-		case err := <-updatesErrChan:
-			if err != nil {
-				t.Logf("Error getting updates: %v", err)
-				break transferLoop
-			}
-		case <-timeout:
-			t.Logf("Timeout waiting for transfer transaction in updates stream")
-			break transferLoop
 		}
-	}
+	}()
 
 	if !foundTransferTx {
 		t.Logf("Warning: Could not find transfer transaction in updates stream")
@@ -422,10 +418,10 @@ transferLoop:
 	for _, holding := range externalHoldingsAfterTransfer {
 		externalBalanceAfterTransfer = externalBalanceAfterTransfer.Add(holding.Amount)
 	}
-	t.Logf("External party balance after transfer: %s (from %d holdings)", externalBalanceAfterTransfer.String(), len(externalHoldingsAfterTransfer))
+	t.Logf("external party balance after transfer: %s (from %d holdings)", externalBalanceAfterTransfer.String(), len(externalHoldingsAfterTransfer))
 	require.True(t, externalBalanceAfterTransfer.GreaterThan(decimal.Zero), "external party balance should be greater than zero after transfer, got %s", externalBalanceAfterTransfer.String())
 
-	t.Log("Creating transfer from external party to receiver")
+	t.Log("creating transfer from external party to receiver")
 	finalTransferAmount := decimal.NewFromFloat(200.0)
 
 	externalHoldings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, false, 100)
@@ -466,11 +462,11 @@ transferLoop:
 
 	finalTransferResp, err := cl.CommandService.SubmitAndWait(ctx, finalSubmitReq)
 	require.NoError(t, err)
-	t.Logf("Final transfer submitted successfully, updateID: %s", finalTransferResp.UpdateID)
+	t.Logf("final transfer submitted successfully, updateID: %s", finalTransferResp.UpdateID)
 
 	time.Sleep(3 * time.Second)
 
-	t.Log("Verifying final balances")
+	t.Log("verifying final balances")
 	walletSDK.TokenStandard().SetPartyID(model.PartyID(receiverParty.Party))
 
 	receiverFinalHoldings, err := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
