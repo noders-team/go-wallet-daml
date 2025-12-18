@@ -701,50 +701,11 @@ func initializeAmuletRules(ctx context.Context, cl *client.DamlBindingClient, ds
 	extAmuletRulesTemplateID := fmt.Sprintf("%s:Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules", spliceAmuletPkgID)
 
 	// First, check if contract already exists
-	req := &damlModel.GetActiveContractsRequest{
-		EventFormat: &damlModel.EventFormat{
-			Verbose: true,
-			FiltersByParty: map[string]*damlModel.Filters{
-				dsoParty: {
-					Inclusive: &damlModel.InclusiveFilters{
-						TemplateFilters: []*damlModel.TemplateFilter{
-							{
-								TemplateID:              amuletRulesTemplateID,
-								IncludeCreatedEventBlob: false,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	stream, errChan := cl.StateService.GetActiveContracts(ctx, req)
-
 	var existingContractID string
-checkLoop:
-	for {
-		select {
-		case resp, ok := <-stream:
-			if !ok {
-				break checkLoop
-			}
-			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
-				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
-					existingContractID = entry.ActiveContract.CreatedEvent.ContractID
-					log.Info().Str("contractID", existingContractID).Msg("AmuletRules contract already exists")
-					break checkLoop
-				}
-			}
-		case err := <-errChan:
-			if err != nil {
-				log.Debug().Err(err).Msg("Error checking for existing AmuletRules")
-			}
-		case <-time.After(2 * time.Second):
-			break checkLoop
-		}
+	existingContractID, err = getContractIDByTemplateID(ctx, cl, dsoParty, amuletRulesTemplateID)
+	if err != nil {
+		log.Warn().Err(err).Msg("error checking for existing AmuletRules contract")
 	}
-
 	if existingContractID != "" {
 		log.Info().Msg("AmuletRules already initialized, skipping creation")
 		return nil
@@ -1003,7 +964,7 @@ updatesLoop:
 		Str("amuletRulesTemplateID", amuletRulesTemplateID).
 		Bool("contractFound", contractFound).
 		Str("contractID", contractID).
-		Msg("AmuletRules contracts initialized")
+		Msg("amuletRules contracts initialized")
 
 	log.Info().Msg("Bootstrapping OpenMiningRound contracts")
 
@@ -1058,36 +1019,40 @@ updatesLoop:
 	bootstrapUpdatesStream, bootstrapUpdatesErrChan := cl.UpdateService.GetUpdates(ctx, bootstrapUpdatesReq)
 
 	openMiningRoundTemplateID := fmt.Sprintf("%s:Splice.Round:OpenMiningRound", spliceAmuletPkgID)
-
-bootstrapLoop:
-	for {
-		select {
-		case resp, ok := <-bootstrapUpdatesStream:
-			if !ok {
-				break bootstrapLoop
-			}
-			if resp.Update != nil && resp.Update.Transaction != nil {
-				tx := resp.Update.Transaction
-				for _, event := range tx.Events {
-					if event.Created != nil && event.Created.TemplateID == openMiningRoundTemplateID {
-						openMiningRoundContractID = event.Created.ContractID
-						log.Info().
-							Str("contractID", openMiningRoundContractID).
-							Str("templateID", openMiningRoundTemplateID).
-							Msg("Stored OpenMiningRound contract ID for later use")
-						os.Setenv("OPEN_MINING_ROUND_CONTRACT_ID", openMiningRoundContractID)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case resp, ok := <-bootstrapUpdatesStream:
+				if !ok {
+					return
+				}
+				if resp.Update != nil && resp.Update.Transaction != nil {
+					tx := resp.Update.Transaction
+					for _, event := range tx.Events {
+						if event.Created != nil && event.Created.TemplateID == openMiningRoundTemplateID {
+							openMiningRoundContractID = event.Created.ContractID
+							log.Info().
+								Str("contractID", openMiningRoundContractID).
+								Str("templateID", openMiningRoundTemplateID).
+								Msg("Stored OpenMiningRound contract ID for later use")
+							os.Setenv("OPEN_MINING_ROUND_CONTRACT_ID", openMiningRoundContractID)
+						}
 					}
 				}
+			case err := <-bootstrapUpdatesErrChan:
+				if err != nil {
+					log.Warn().Err(err).Msg("Error getting bootstrap updates")
+					return
+				}
+			case <-time.After(2 * time.Second):
+				return
 			}
-		case err := <-bootstrapUpdatesErrChan:
-			if err != nil {
-				log.Warn().Err(err).Msg("Error getting bootstrap updates")
-				break bootstrapLoop
-			}
-		case <-time.After(2 * time.Second):
-			break bootstrapLoop
 		}
-	}
+	}()
+	wg.Wait()
 
 	if openMiningRoundContractID == "" {
 		return fmt.Errorf("failed to extract OpenMiningRound contract ID from bootstrap transaction")
