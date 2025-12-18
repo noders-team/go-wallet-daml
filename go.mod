@@ -4,7 +4,8 @@ go 1.23.0
 
 toolchain go1.24.10
 
-//replace github.com/noders-team/go-daml => /Users/artem_bogomaz/Documents/GIT2/nodersteam/go-daml
+replace github.com/noders-team/go-daml => /Users/artem_bogomaz/Documents/GIT2/nodersteam/go-daml
+
 replace github.com/digital-asset/dazl-client/v8 => github.com/noders-team/dazl-client/v8 v8.7.1-2
 
 require (

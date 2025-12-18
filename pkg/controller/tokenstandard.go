@@ -2,12 +2,15 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
+	"github.com/noders-team/go-daml/pkg/types"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/rs/zerolog"
@@ -215,7 +218,7 @@ func (t *TokenStandardController) GetBalance(ctx context.Context) (decimal.Decim
 				TemplateFilters: []*damlModel.TemplateFilter{
 					{
 						TemplateID:              "3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1:Splice.Amulet:Amulet",
-						IncludeCreatedEventBlob: false,
+						IncludeCreatedEventBlob: false, // TODO no hardcoded values
 					},
 				},
 			},
@@ -333,15 +336,35 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 		return nil, err
 	}
 
-	req := &damlModel.GetActiveContractsRequest{
-		EventFormat: &damlModel.EventFormat{
+	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	var spliceAmuletPkgID string
+	for _, pkg := range packages {
+		if pkg.Name == "splice-amulet" {
+			spliceAmuletPkgID = pkg.PackageID
+			break
+		}
+	}
+
+	if spliceAmuletPkgID == "" {
+		return nil, fmt.Errorf("splice-amulet package not found")
+	}
+
+	amuletTemplateID := fmt.Sprintf("%s:Splice.Amulet:Amulet", spliceAmuletPkgID)
+
+	req := &damlModel.GetUpdatesRequest{
+		BeginExclusive: 0,
+		UpdateFormat: &damlModel.EventFormat{
 			Verbose: true,
 			FiltersByParty: map[string]*damlModel.Filters{
 				string(partyID): {
 					Inclusive: &damlModel.InclusiveFilters{
-						InterfaceFilters: []*damlModel.InterfaceFilter{
+						TemplateFilters: []*damlModel.TemplateFilter{
 							{
-								InterfaceID:             "Splice.Holding:Holding",
+								TemplateID:              amuletTemplateID,
 								IncludeCreatedEventBlob: true,
 							},
 						},
@@ -351,75 +374,143 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 		},
 	}
 
-	stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
+	stream, errChan := t.damlClient.UpdateService.GetUpdates(ctx, req)
 
-	var utxos []*HoldingUTXO
-	currentTime := time.Now()
+	activeContracts := make(map[string]*HoldingUTXO)
+	timeout := time.After(2 * time.Second)
+	updateCount := 0
 
 	for {
 		select {
 		case resp, ok := <-stream:
 			if !ok {
-				if limit > 0 && len(utxos) > limit {
-					return utxos[:limit], nil
+				t.logger.Debug().
+					Int("totalUpdates", updateCount).
+					Int("activeContracts", len(activeContracts)).
+					Msg("GetUpdates stream closed")
+				result := make([]*HoldingUTXO, 0, len(activeContracts))
+				for _, utxo := range activeContracts {
+					result = append(result, utxo)
 				}
-				return utxos, nil
+				if limit > 0 && len(result) > limit {
+					return result[:limit], nil
+				}
+				return result, nil
 			}
-			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
-				if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
-					contract := entry.ActiveContract.CreatedEvent
-					args, ok := contract.CreateArguments.(map[string]interface{})
-					if !ok {
-						continue
-					}
 
-					utxo := &HoldingUTXO{
-						ContractID:       contract.ContractID,
-						CreatedEventBlob: contract.CreatedEventBlob,
-					}
+			updateCount++
+			if resp.Update != nil && resp.Update.Transaction != nil {
+				t.logger.Debug().
+					Int("eventCount", len(resp.Update.Transaction.Events)).
+					Str("updateID", resp.Update.Transaction.UpdateID).
+					Msg("Received transaction update")
+				for _, event := range resp.Update.Transaction.Events {
+					if event.Created != nil {
+						contract := event.Created
+						t.logger.Debug().
+							Str("contractID", contract.ContractID).
+							Str("templateID", contract.TemplateID).
+							Msg("Found created Amulet contract")
 
-					if amountVal, ok := args["amount"]; ok {
-						if amountStr, ok := amountVal.(string); ok {
-							utxo.Amount, _ = decimal.NewFromString(amountStr)
+						utxo := &HoldingUTXO{
+							ContractID:       contract.ContractID,
+							CreatedEventBlob: contract.CreatedEventBlob,
+							InstrumentID:     "Amulet",
+							InstrumentAdmin:  string(partyID),
 						}
-					}
 
-					if instrumentIDMap, ok := args["instrumentId"].(map[string]interface{}); ok {
-						if id, ok := instrumentIDMap["id"].(string); ok {
-							utxo.InstrumentID = id
+						jsonBytes, err := json.Marshal(contract.CreateArguments)
+						if err != nil {
+							t.logger.Warn().
+								Err(err).
+								Str("contractID", contract.ContractID).
+								Msg("Failed to marshal CreateArguments to JSON")
+							continue
 						}
-						if admin, ok := instrumentIDMap["admin"].(string); ok {
-							utxo.InstrumentAdmin = admin
+
+						var recordVal map[string]interface{}
+						if err := json.Unmarshal(jsonBytes, &recordVal); err != nil {
+							t.logger.Warn().
+								Err(err).
+								Str("contractID", contract.ContractID).
+								Msg("Failed to unmarshal JSON to map")
+							continue
 						}
-					}
 
-					if owner, ok := args["owner"].(string); ok {
-						utxo.Owner = owner
-					}
+						if fieldsVal, ok := recordVal["fields"].([]interface{}); ok {
+							for _, field := range fieldsVal {
+								if fieldMap, ok := field.(map[string]interface{}); ok {
+									label, _ := fieldMap["label"].(string)
+									value := fieldMap["value"]
 
-					if lockVal, ok := args["lock"].(map[string]interface{}); ok {
-						utxo.Lock = lockVal
-
-						if !includeLocked {
-							if expiresAtVal, ok := lockVal["expiresAt"]; ok {
-								if expiresAtStr, ok := expiresAtVal.(string); ok {
-									if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
-										if expiresAt.After(currentTime) {
-											continue
+									if label == "amount" {
+										if valueMap, ok := value.(map[string]interface{}); ok {
+											if sumMap, ok := valueMap["Sum"].(map[string]interface{}); ok {
+												if recordMap, ok := sumMap["Record"].(map[string]interface{}); ok {
+													if recordFields, ok := recordMap["fields"].([]interface{}); ok {
+														for _, rf := range recordFields {
+															if rfMap, ok := rf.(map[string]interface{}); ok {
+																if rfMap["label"] == "initialAmount" {
+																	if rfValue, ok := rfMap["value"].(map[string]interface{}); ok {
+																		if rfSum, ok := rfValue["Sum"].(map[string]interface{}); ok {
+																			if amountStr, ok := rfSum["Numeric"].(string); ok {
+																				utxo.Amount, _ = decimal.NewFromString(amountStr)
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												} else if numericStr, ok := sumMap["Numeric"].(string); ok {
+													utxo.Amount, _ = decimal.NewFromString(numericStr)
+												}
+											}
+										}
+									} else if label == "owner" {
+										if valueMap, ok := value.(map[string]interface{}); ok {
+											if sumMap, ok := valueMap["Sum"].(map[string]interface{}); ok {
+												if partyStr, ok := sumMap["Party"].(string); ok {
+													utxo.Owner = partyStr
+												}
+											}
 										}
 									}
 								}
 							}
 						}
-					}
 
-					utxos = append(utxos, utxo)
+						activeContracts[contract.ContractID] = utxo
+						t.logger.Debug().
+							Str("contractID", contract.ContractID).
+							Str("amount", utxo.Amount.String()).
+							Int("totalActive", len(activeContracts)).
+							Msg("Added contract to active set")
+					} else if event.Archived != nil {
+						delete(activeContracts, event.Archived.ContractID)
+						t.logger.Debug().
+							Str("contractID", event.Archived.ContractID).
+							Msg("Removed archived contract")
+					}
 				}
 			}
 		case err := <-errChan:
 			if err != nil {
 				return nil, fmt.Errorf("failed to list holding utxos: %w", err)
 			}
+		case <-timeout:
+			t.logger.Debug().
+				Int("activeContracts", len(activeContracts)).
+				Int("totalUpdates", updateCount).
+				Msg("Timeout reached, returning active contracts")
+			result := make([]*HoldingUTXO, 0, len(activeContracts))
+			for _, utxo := range activeContracts {
+				result = append(result, utxo)
+			}
+			if limit > 0 && len(result) > limit {
+				return result[:limit], nil
+			}
+			return result, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -479,6 +570,23 @@ type CreateTransferResult struct {
 	DisclosedContracts []*damlModel.DisclosedContract
 }
 
+type InputAmuletVariant struct {
+	ContractID string
+}
+
+func (v InputAmuletVariant) GetVariantTag() string {
+	return "InputAmulet"
+}
+
+func (v InputAmuletVariant) GetVariantValue() interface{} {
+	return types.CONTRACT_ID(v.ContractID)
+}
+
+func decimalToNumeric(d decimal.Decimal) types.NUMERIC {
+	scaled := d.Mul(decimal.NewFromInt(10000000000))
+	return types.NUMERIC(scaled.BigInt())
+}
+
 func (t *TokenStandardController) CreateTransfer(
 	ctx context.Context,
 	sender model.PartyID,
@@ -491,6 +599,25 @@ func (t *TokenStandardController) CreateTransfer(
 ) (*CreateTransferResult, error) {
 	if instrumentAdmin == "" {
 		return nil, fmt.Errorf("instrumentAdmin is required")
+	}
+
+	amuletRulesTemplateID, amuletRulesContractID, err := t.findAmuletRulesContract(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find AmuletRules contract: %w", err)
+	}
+
+	t.logger.Debug().
+		Str("amuletRulesTemplateID", amuletRulesTemplateID).
+		Str("amuletRulesContractID", amuletRulesContractID).
+		Msg("Found AmuletRules contract for transfer")
+
+	if amuletRulesContractID == "" {
+		return nil, fmt.Errorf("amuletRulesContractID is empty")
+	}
+
+	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	if openMiningRoundContractID == "" {
+		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set")
 	}
 
 	var utxosToUse []string
@@ -518,16 +645,54 @@ func (t *TokenStandardController) CreateTransfer(
 		}
 	}
 
+	if len(utxosToUse) == 0 {
+		return nil, fmt.Errorf("no utxos available for transfer")
+	}
+
+	var transferInputs []interface{}
+	for _, utxo := range utxosToUse {
+		transferInputs = append(transferInputs, InputAmuletVariant{ContractID: utxo})
+	}
+
+	transferOutput := map[string]interface{}{
+		"receiver":         types.PARTY(string(receiver)),
+		"receiverFeeRatio": decimalToNumeric(decimal.Zero),
+		"amount":           decimalToNumeric(amount),
+	}
+
+	transferStruct := map[string]interface{}{
+		"sender":   types.PARTY(string(sender)),
+		"provider": types.PARTY(string(sender)),
+		"inputs":   transferInputs,
+		"outputs":  []interface{}{transferOutput},
+	}
+
+	emptyGenMap := map[string]interface{}{
+		"_type": "genmap",
+		"value": make(map[string]interface{}),
+	}
+
+	transferContext := map[string]interface{}{
+		"openMiningRound":     types.CONTRACT_ID(openMiningRoundContractID),
+		"issuingMiningRounds": emptyGenMap,
+		"validatorRights":     emptyGenMap,
+	}
+
+	dsoParty := types.PARTY(instrumentAdmin)
+	expectedDso := map[string]interface{}{
+		"_type": "optional",
+		"value": dsoParty,
+	}
+
 	transferCmd := &damlModel.Command{
 		Command: &damlModel.ExerciseCommand{
-			TemplateID: "Splice.Amulet:Amulet",
-			Choice:     "Amulet_Transfer",
+			TemplateID: amuletRulesTemplateID,
+			ContractID: amuletRulesContractID,
+			Choice:     "AmuletRules_Transfer",
 			Arguments: map[string]interface{}{
-				"sender":   string(sender),
-				"receiver": string(receiver),
-				"amount":   amount.String(),
-				"inputs":   utxosToUse,
-				"memo":     memo,
+				"transfer":    transferStruct,
+				"context":     transferContext,
+				"expectedDso": expectedDso,
 			},
 		},
 	}
@@ -552,16 +717,25 @@ func (t *TokenStandardController) CreateTap(
 	instrumentAdmin string,
 	instrumentID string,
 ) (*CreateTapResult, error) {
+	amuletRulesTemplateID, amuletRulesContractID, err := t.findAmuletRulesContract(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find AmuletRules contract: %w", err)
+	}
+
+	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	if openMiningRoundContractID == "" {
+		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set - OpenMiningRound needs to be bootstrapped first")
+	}
+
 	tapCmd := &damlModel.Command{
 		Command: &damlModel.ExerciseCommand{
-			TemplateID: "Splice.AmuletRules:AmuletRules",
+			TemplateID: amuletRulesTemplateID,
+			ContractID: amuletRulesContractID,
 			Choice:     "AmuletRules_DevNet_Tap",
 			Arguments: map[string]interface{}{
-				"receiver": map[string]interface{}{
-					"_type": "party",
-					"value": string(receiver),
-				},
-				"amount": amount.String(),
+				"receiver":  types.PARTY(string(receiver)),
+				"amount":    decimalToNumeric(amount),
+				"openRound": types.CONTRACT_ID(openMiningRoundContractID),
 			},
 		},
 	}
@@ -1467,7 +1641,7 @@ func (t *TokenStandardController) CreateAndSubmitTapInternal(
 	}
 
 	cmdID := fmt.Sprintf("tap-%d", time.Now().UnixNano())
-	submitReq := &damlModel.SubmitRequest{
+	submitReq := &damlModel.SubmitAndWaitRequest{
 		Commands: &damlModel.Commands{
 			UserID:    t.userID,
 			CommandID: cmdID,
@@ -1477,13 +1651,15 @@ func (t *TokenStandardController) CreateAndSubmitTapInternal(
 		},
 	}
 
-	_, err = t.damlClient.CommandSubmission.Submit(ctx, submitReq)
+	resp, err := t.damlClient.CommandService.SubmitAndWait(ctx, submitReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to submit tap: %w", err)
 	}
 
 	return map[string]interface{}{
-		"commandId": cmdID,
+		"commandId":        cmdID,
+		"updateId":         resp.UpdateID,
+		"completionOffset": resp.CompletionOffset,
 	}, nil
 }
 
@@ -1577,6 +1753,128 @@ func (t *TokenStandardController) CreateBatchMergeUtility(ctx context.Context) (
 			},
 		},
 	}, nil
+}
+
+func (t *TokenStandardController) findAmuletRulesContract(ctx context.Context) (string, string, error) {
+	testUtilTemplateID := ""
+	testUtilContractID := ""
+
+	type testUtilGetter interface {
+		GetAmuletRulesTemplateID() string
+		GetAmuletRulesContractID() string
+	}
+
+	testUtilTemplateID = os.Getenv("AMULET_RULES_TEMPLATE_ID")
+	testUtilContractID = os.Getenv("AMULET_RULES_CONTRACT_ID")
+
+	if testUtilTemplateID != "" && testUtilContractID != "" {
+		t.logger.Info().
+			Str("templateID", testUtilTemplateID).
+			Str("contractID", testUtilContractID).
+			Msg("Using AmuletRules contract from environment variables")
+		return testUtilTemplateID, testUtilContractID, nil
+	}
+
+	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	var spliceAmuletPkgID string
+	for _, pkg := range packages {
+		if pkg.Name == "splice-amulet" {
+			spliceAmuletPkgID = pkg.PackageID
+			break
+		}
+	}
+
+	if spliceAmuletPkgID == "" {
+		return "", "", fmt.Errorf("splice-amulet package not found")
+	}
+
+	possibleTemplateIDs := []string{
+		fmt.Sprintf("%s:Splice.AmuletRules:AmuletRules", spliceAmuletPkgID),
+		fmt.Sprintf("%s:Splice.Amulet:AmuletRules", spliceAmuletPkgID),
+		fmt.Sprintf("%s:Splice.Amulet.AmuletRules:AmuletRules", spliceAmuletPkgID),
+	}
+
+	partyID, err := t.GetPartyID()
+	if err != nil {
+		return "", "", err
+	}
+
+	for _, templateID := range possibleTemplateIDs {
+		t.logger.Info().
+			Str("templateID", templateID).
+			Str("partyID", string(partyID)).
+			Msg("Trying to find AmuletRules with template ID")
+
+		req := &damlModel.GetActiveContractsRequest{
+			EventFormat: &damlModel.EventFormat{
+				Verbose: true,
+				FiltersByParty: map[string]*damlModel.Filters{
+					string(partyID): {
+						Inclusive: &damlModel.InclusiveFilters{
+							TemplateFilters: []*damlModel.TemplateFilter{
+								{
+									TemplateID:              templateID,
+									IncludeCreatedEventBlob: false,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		stream, errChan := t.damlClient.StateService.GetActiveContracts(ctx, req)
+
+		var foundContract *damlModel.CreatedEvent
+	streamLoop:
+		for {
+			select {
+			case resp, ok := <-stream:
+				if !ok {
+					if foundContract != nil {
+						t.logger.Info().
+							Str("templateID", templateID).
+							Str("contractID", foundContract.ContractID).
+							Msg("Found AmuletRules contract")
+						return templateID, foundContract.ContractID, nil
+					}
+					t.logger.Debug().
+						Str("templateID", templateID).
+						Str("partyID", string(partyID)).
+						Msg("Stream closed, no contract found with this template ID")
+					break streamLoop
+				}
+				if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
+					if entry.ActiveContract != nil && entry.ActiveContract.CreatedEvent != nil {
+						contract := entry.ActiveContract.CreatedEvent
+						t.logger.Info().
+							Str("templateID", templateID).
+							Str("contractID", contract.ContractID).
+							Str("partyID", string(partyID)).
+							Msg("Received contract from stream")
+						foundContract = contract
+					}
+				}
+			case err := <-errChan:
+				if err != nil {
+					t.logger.Warn().
+						Err(err).
+						Str("templateID", templateID).
+						Str("partyID", string(partyID)).
+						Msg("Error querying for template, trying next")
+					break streamLoop
+				}
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("AmuletRules contract not found - it may need to be initialized first. Attempted template IDs: %v", possibleTemplateIDs)
 }
 
 func (t *TokenStandardController) CreateMergeDelegationProposal(ctx context.Context, delegate model.PartyID, metadata map[string]interface{}) (*damlModel.Command, error) {
