@@ -615,7 +615,7 @@ func (t *TokenStandardController) CreateTransfer(
 		return nil, fmt.Errorf("amuletRulesContractID is empty")
 	}
 
-	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID") // TODO fix it
 	if openMiningRoundContractID == "" {
 		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set")
 	}
@@ -722,7 +722,7 @@ func (t *TokenStandardController) CreateTap(
 		return nil, fmt.Errorf("failed to find AmuletRules contract: %w", err)
 	}
 
-	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID") // TODO fix it
 	if openMiningRoundContractID == "" {
 		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set - OpenMiningRound needs to be bootstrapped first")
 	}
@@ -778,7 +778,7 @@ func (t *TokenStandardController) ListHoldingTransactions(ctx context.Context, b
 				Inclusive: &damlModel.InclusiveFilters{
 					InterfaceFilters: []*damlModel.InterfaceFilter{
 						{
-							InterfaceID:             "Splice.Holding:Holding",
+							InterfaceID:             "Splice.Holding:Holding", // TODO fix it
 							IncludeCreatedEventBlob: true,
 						},
 					},
