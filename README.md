@@ -44,33 +44,62 @@ go get github.com/noders-team/go-wallet-daml
 import (
     "context"
     "github.com/noders-team/go-wallet-daml/pkg/auth"
+    "github.com/noders-team/go-wallet-daml/pkg/controller"
+    "github.com/noders-team/go-wallet-daml/pkg/model"
     "github.com/noders-team/go-wallet-daml/pkg/sdk"
     "github.com/shopspring/decimal"
 )
 
-authProvider := auth.NewUnsafeAuthTokenProvider()
+walletSDK := sdk.NewWalletSDK()
+walletSDK.Configure(sdk.Config{
+    AuthFactory: func() auth.AuthController {
+        return auth.NewMockAuthController("user-123")
+    },
+    LedgerFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error) {
+        return controller.NewLedgerController(userID, "localhost:6865", "", provider, isAdmin)
+    },
+    TokenStandardFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error) {
+        return controller.NewTokenStandardController(userID, "localhost:6865", provider, isAdmin)
+    },
+})
 
-walletSDK, err := sdk.NewWalletSDK(
-    "user-123",
-    "localhost:6865",
-    authProvider,
-    false,
-)
+err := walletSDK.Connect(ctx)
+
+partyID := model.PartyID("alice::1220...")
+synchronizerID := model.PartyID("mysynchronizer::1220...")
+walletSDK.SetPartyID(ctx, partyID, &synchronizerID)
 
 balance, _ := walletSDK.TokenStandard().GetBalance(ctx)
 holdings, _ := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 ```
 
-## SDK Modules
+## SDK Architecture
+
+### WalletSDK Methods
+
+- **`NewWalletSDK()`** - Creates new SDK instance
+- **`Configure(config Config)`** - Configures SDK with factory functions
+- **`Connect(ctx)`** - Connects with user token and initializes user controllers
+- **`ConnectAdmin(ctx)`** - Connects with admin token and initializes admin controllers
+- **`SetPartyID(ctx, partyID, synchronizerID)`** - Sets party and synchronizer for all controllers
+
+### Controller Accessors
+
+- **`TokenStandard()`** - Returns TokenStandardController for token operations
+- **`UserLedger()`** - Returns user LedgerController
+- **`AdminLedger()`** - Returns admin LedgerController (requires ConnectAdmin)
+- **`Validator()`** - Returns ValidatorController
+- **`Auth()`** - Returns AuthController
+- **`AuthTokenProvider()`** - Returns AuthTokenProvider
 
 ### Core Components (`pkg/`)
 
-- **`pkg/sdk/`** - High-level wallet SDK entry point
+- **`pkg/sdk/`** - High-level wallet SDK entry point with factory pattern
 - **`pkg/controller/`** - Core controllers
   - **TokenStandardController** - Token operations (mint, transfer, burn, lock, UTXO management)
   - **LedgerController** - Ledger state management and party operations
   - **ValidatorController** - Validator rights and operations
-- **`pkg/auth/`** - Authentication (OAuth, JWT, unsafe mode)
+- **`pkg/auth/`** - Authentication (OAuth, JWT, mock mode)
 - **`pkg/crypto/`** - Cryptographic utilities (Ed25519, signing, hashing)
 - **`pkg/model/`** - Data models and type definitions
 - **`pkg/testutil/`** - Testing utilities and Docker container management
@@ -78,17 +107,46 @@ holdings, _ := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 
 ## Usage Examples
 
-### Transfer Operations
+### SDK Initialization
 
 ```go
 ctx := context.Background()
-walletSDK, _ := sdk.NewWalletSDK("alice", "localhost:6865", authProvider, false)
+grpcAddr := "localhost:6865"
+scanProxyURL := "http://localhost:5012"
 
+walletSDK := sdk.NewWalletSDK()
+walletSDK.Configure(sdk.Config{
+    AuthFactory: func() auth.AuthController {
+        return auth.NewMockAuthController("alice")
+    },
+    LedgerFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error) {
+        return controller.NewLedgerController(userID, grpcAddr, scanProxyURL, provider, isAdmin)
+    },
+    TokenStandardFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error) {
+        return controller.NewTokenStandardController(userID, grpcAddr, provider, isAdmin)
+    },
+    ValidatorFactory: func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error) {
+        return controller.NewValidatorController(userID, grpcAddr, scanProxyURL, provider)
+    },
+})
+
+err := walletSDK.Connect(ctx)
+
+partyID := model.PartyID("alice::1220...")
+synchronizerID := model.PartyID("mysynchronizer::1220...")
+walletSDK.SetPartyID(ctx, partyID, &synchronizerID)
+```
+
+### Transfer Operations
+
+```go
 senderParty := model.PartyID("alice::1220...")
 receiverParty := model.PartyID("bob::1220...")
-amount := decimal.NewFromInt(100)
+amount := decimal.NewFromFloat(100.0)
 
-holdings, _ := walletSDK.TokenStandard().ListHoldingUtxos(ctx, false, 10)
+walletSDK.SetPartyID(ctx, senderParty, nil)
+
+holdings, _ := walletSDK.TokenStandard().ListHoldingUtxos(ctx, false, 100)
 var inputUtxos []string
 for _, h := range holdings {
     inputUtxos = append(inputUtxos, h.ContractID)
@@ -99,66 +157,73 @@ result, _ := walletSDK.TokenStandard().CreateTransfer(
     senderParty,
     receiverParty,
     amount,
-    "Amulet",
-    "dso::1220...",
+    holdings[0].InstrumentID,
+    holdings[0].InstrumentAdmin,
     inputUtxos,
-    "Payment",
+    "payment-description",
 )
 ```
 
 ### Mint (Tap) Operations
 
 ```go
+dsoParty := model.PartyID("dso::1220...")
 receiverParty := model.PartyID("alice::1220...")
-amount := decimal.NewFromInt(1000)
+amount := decimal.NewFromFloat(1000.0)
+
+walletSDK.SetPartyID(ctx, dsoParty, nil)
 
 result, _ := walletSDK.TokenStandard().CreateAndSubmitTapInternal(
     ctx,
     receiverParty,
     amount,
-    "Amulet",
-    "dso::1220...",
+    "",
+    string(dsoParty),
 )
 ```
 
-### External Party Allocation
+### Admin Operations
 
 ```go
-import "crypto/ed25519"
+err := walletSDK.ConnectAdmin(ctx)
 
-publicKey, privateKey, _ := ed25519.GenerateKey(nil)
-
-partyID, _ := walletSDK.Ledger().AllocateExternalParty(
-    ctx,
-    "external-wallet",
-    publicKey,
-    privateKey,
-    []string{"dso::1220..."},
-    "mysynchronizer::1220...",
-)
+adminLedger := walletSDK.AdminLedger()
 ```
 
 ## Key Concepts
 
-### Decimal Conversion
-DAML NUMERIC requires scaling by 10^10. Always use `decimal.Decimal`:
+### Party and Synchronizer Management
+Set party and synchronizer before performing operations:
 
 ```go
+partyID := model.PartyID("alice::1220...")
+synchronizerID := model.PartyID("mysynchronizer::1220...")
+
+walletSDK.SetPartyID(ctx, partyID, &synchronizerID)
+
+walletSDK.SetPartyID(ctx, partyID, nil)
+```
+
+### Decimal Conversion
+Always use `decimal.Decimal` for amounts:
+
+```go
+amount := decimal.NewFromFloat(100.0)
 amount := decimal.NewFromInt(1000)
 ```
 
 ### Multi-party Authorization
-Include all relevant parties in ActAs:
+Include all relevant parties in ActAs when submitting commands:
 
 ```go
 ActAs: []string{dsoParty, senderParty, receiverParty}
 ```
 
 ### Balance Retrieval
-Use `ListHoldingUtxos()` for accurate balance:
+Use `ListHoldingUtxos()` for accurate balance calculation:
 
 ```go
-holdings, _ := tokenStandard.ListHoldingUtxos(ctx, true, 100)
+holdings, _ := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 totalBalance := decimal.Zero
 for _, h := range holdings {
     totalBalance = totalBalance.Add(h.Amount)
@@ -170,13 +235,23 @@ for _, h := range holdings {
 ### Build & Test
 
 ```bash
-go build
+make deps
+
+make test
+
+make test-coverage
+
+go test -v ./pkg/sdk -run TestExternalPartyWalletWithMintAndTransfer
+```
+
+Or using standard Go commands:
+
+```bash
+go mod tidy
 
 go test ./...
 
-go test -v ./pkg/sdk -run TestExternalPartyWalletWithMintAndTransfer
-
-go test -coverprofile=coverage.out ./...
+go test -v -coverprofile=coverage.out ./...
 ```
 
 ### Prerequisites
