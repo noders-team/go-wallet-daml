@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/google/uuid"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
@@ -21,8 +20,6 @@ type DappClient struct {
 	httpBaseURL string
 	httpClient  *http.Client
 	emitter     *EventEmitter
-	txCache     map[string]*model.PrepareSubmissionResponse
-	mu          sync.RWMutex
 	logger      zerolog.Logger
 }
 
@@ -34,7 +31,6 @@ func NewDappClient(walletSDK *sdk.WalletSDK, httpBaseURL string) *DappClient {
 		httpBaseURL: httpBaseURL,
 		httpClient:  &http.Client{},
 		emitter:     NewEventEmitter(),
-		txCache:     make(map[string]*model.PrepareSubmissionResponse),
 		logger:      logger,
 	}
 }
@@ -120,11 +116,6 @@ func (d *DappClient) Connect(ctx context.Context) (*model.StatusEvent, error) {
 
 func (d *DappClient) Disconnect(ctx context.Context) error {
 	d.emitter.Close()
-
-	d.mu.Lock()
-	d.txCache = make(map[string]*model.PrepareSubmissionResponse)
-	d.mu.Unlock()
-
 	return nil
 }
 
@@ -165,7 +156,7 @@ func (d *DappClient) PrepareReturn(ctx context.Context, req *model.JsPrepareSubm
 		commandID = uuid.New().String()
 	}
 
-	prepared, err := d.sdk.UserLedger().PrepareSubmission(ctx, commands, commandID, disclosed)
+	prepared, err := d.sdk.UserLedger().PrepareSubmission(ctx, commands, commandID, disclosed, req.ActAs, req.ReadAs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare submission: %w", err)
 	}
@@ -193,14 +184,10 @@ func (d *DappClient) PrepareExecute(ctx context.Context, req *model.JsPrepareSub
 		commandID = uuid.New().String()
 	}
 
-	prepared, err := d.sdk.UserLedger().PrepareSubmission(ctx, commands, commandID, disclosed)
+	_, err = d.sdk.UserLedger().PrepareSubmission(ctx, commands, commandID, disclosed, req.ActAs, req.ReadAs)
 	if err != nil {
 		return fmt.Errorf("failed to prepare submission: %w", err)
 	}
-
-	d.mu.Lock()
-	d.txCache[commandID] = prepared
-	d.mu.Unlock()
 
 	d.emitter.EmitTxChanged(&model.TxChangedPendingEvent{
 		Status:    "pending",
@@ -215,21 +202,9 @@ func (d *DappClient) PrepareExecuteAndWait(ctx context.Context, req *model.JsPre
 		return nil, model.ErrNoUserLedger
 	}
 
-	commands, err := d.convertToInternalCommands(req.Commands)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert commands: %w", err)
-	}
-
-	disclosed := d.convertDisclosedContracts(req.DisclosedContracts)
-
 	commandID := req.CommandID
 	if commandID == "" {
 		commandID = uuid.New().String()
-	}
-
-	_, err = d.sdk.UserLedger().PrepareSubmission(ctx, commands, commandID, disclosed)
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare submission: %w", err)
 	}
 
 	d.emitter.EmitTxChanged(&model.TxChangedPendingEvent{
@@ -237,7 +212,32 @@ func (d *DappClient) PrepareExecuteAndWait(ctx context.Context, req *model.JsPre
 		CommandID: commandID,
 	})
 
-	return nil, model.ErrSignatureRequired
+	commands, err := d.convertToInternalCommands(req.Commands)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert commands: %w", err)
+	}
+
+	result, err := d.sdk.UserLedger().SubmitCommandAndWait(ctx, commands, commandID, d.convertDisclosedContracts(req.DisclosedContracts), req.ActAs, req.ReadAs)
+	if err != nil {
+		d.emitter.EmitTxChanged(&model.TxChangedFailedEvent{
+			Status:    "failed",
+			CommandID: commandID,
+		})
+		return nil, fmt.Errorf("failed to submit command: %w", err)
+	}
+
+	event := &model.TxChangedExecutedEvent{
+		Status:    "executed",
+		CommandID: commandID,
+		Payload: &model.TxChangedExecutedPayload{
+			UpdateID:         result.UpdateID,
+			CompletionOffset: result.CompletionOffset,
+		},
+	}
+
+	d.emitter.EmitTxChanged(event)
+
+	return event, nil
 }
 
 func (d *DappClient) LedgerApi(ctx context.Context, req *model.LedgerApiRequest) (*model.LedgerApiResult, error) {
