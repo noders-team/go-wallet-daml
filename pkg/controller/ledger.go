@@ -898,6 +898,14 @@ func (l *LedgerController) UploadDar(ctx context.Context, darBytes []byte) error
 	return nil
 }
 
+func (l *LedgerController) ListKnownPackages(ctx context.Context) ([]*damlModel.PackageDetails, error) {
+	packages, err := l.damlClient.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list known packages: %w", err)
+	}
+	return packages, nil
+}
+
 func (l *LedgerController) IsPackageUploaded(ctx context.Context, packageID string) (bool, error) {
 	req := &damlModel.ListPackagesRequest{}
 	resp, err := l.damlClient.PackageService.ListPackages(ctx, req)
