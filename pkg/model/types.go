@@ -202,8 +202,8 @@ type InterfaceFilter struct {
 }
 
 type DisclosedContract struct {
-	TemplateID       string
-	ContractID       string
-	CreatedEventBlob []byte
-	SynchronizerID   string
+	TemplateID       string `json:"templateId,omitempty"`
+	ContractID       string `json:"contractId,omitempty"`
+	CreatedEventBlob []byte `json:"createdEventBlob,omitempty"`
+	SynchronizerID   string `json:"synchronizerId,omitempty"`
 }

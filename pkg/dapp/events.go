@@ -1,21 +1,25 @@
 package dapp
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/noders-team/go-wallet-daml/pkg/model"
+)
 
 type EventEmitter struct {
-	accountsListeners []chan []*Wallet
+	accountsListeners []chan []*model.Wallet
 	txListeners       []chan interface{}
 	mu                sync.RWMutex
 }
 
 func NewEventEmitter() *EventEmitter {
 	return &EventEmitter{
-		accountsListeners: make([]chan []*Wallet, 0),
+		accountsListeners: make([]chan []*model.Wallet, 0),
 		txListeners:       make([]chan interface{}, 0),
 	}
 }
 
-func (e *EventEmitter) EmitAccountsChanged(wallets []*Wallet) {
+func (e *EventEmitter) EmitAccountsChanged(wallets []*model.Wallet) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -39,7 +43,7 @@ func (e *EventEmitter) EmitTxChanged(event interface{}) {
 	}
 }
 
-func (e *EventEmitter) AddAccountsListener(ch chan []*Wallet) {
+func (e *EventEmitter) AddAccountsListener(ch chan []*model.Wallet) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.accountsListeners = append(e.accountsListeners, ch)
@@ -51,7 +55,7 @@ func (e *EventEmitter) AddTxListener(ch chan interface{}) {
 	e.txListeners = append(e.txListeners, ch)
 }
 
-func (e *EventEmitter) RemoveAccountsListener(ch chan []*Wallet) {
+func (e *EventEmitter) RemoveAccountsListener(ch chan []*model.Wallet) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

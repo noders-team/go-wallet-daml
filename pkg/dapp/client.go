@@ -39,9 +39,9 @@ func NewDappClient(walletSDK *sdk.WalletSDK, httpBaseURL string) *DappClient {
 	}
 }
 
-func (d *DappClient) Status(ctx context.Context) (*StatusEvent, error) {
-	status := &StatusEvent{
-		Kernel: &KernelInfo{
+func (d *DappClient) Status(ctx context.Context) (*model.StatusEvent, error) {
+	status := &model.StatusEvent{
+		Kernel: &model.KernelInfo{
 			ID:         uuid.New().String(),
 			ClientType: "desktop",
 		},
@@ -61,7 +61,7 @@ func (d *DappClient) Status(ctx context.Context) (*StatusEvent, error) {
 	}
 
 	status.IsConnected = true
-	status.Session = &SessionInfo{
+	status.Session = &model.SessionInfo{
 		UserID:      authCtx.UserID,
 		AccessToken: authCtx.AccessToken,
 	}
@@ -89,9 +89,9 @@ func (d *DappClient) Status(ctx context.Context) (*StatusEvent, error) {
 	}
 
 	status.IsNetworkConnected = true
-	status.Network = &NetworkInfo{
+	status.Network = &model.NetworkInfo{
 		NetworkID: fmt.Sprintf("canton:%s", syncResp.ConnectedSynchronizers[0].SynchronizerID),
-		LedgerApi: &LedgerApiInfo{
+		LedgerApi: &model.LedgerApiInfo{
 			BaseURL: d.httpBaseURL,
 		},
 	}
@@ -99,9 +99,9 @@ func (d *DappClient) Status(ctx context.Context) (*StatusEvent, error) {
 	return status, nil
 }
 
-func (d *DappClient) Connect(ctx context.Context) (*StatusEvent, error) {
+func (d *DappClient) Connect(ctx context.Context) (*model.StatusEvent, error) {
 	if d.sdk.Auth() == nil {
-		return nil, ErrNotAuthenticated
+		return nil, model.ErrNotAuthenticated
 	}
 
 	_, err := d.sdk.Auth().GetUserToken(ctx)
@@ -130,7 +130,7 @@ func (d *DappClient) Disconnect(ctx context.Context) error {
 
 func (d *DappClient) DarsAvailable(ctx context.Context) ([]string, error) {
 	if d.sdk.UserLedger() == nil {
-		return nil, ErrNoUserLedger
+		return nil, model.ErrNoUserLedger
 	}
 
 	packages, err := d.sdk.UserLedger().ListKnownPackages(ctx)
@@ -148,9 +148,9 @@ func (d *DappClient) DarsAvailable(ctx context.Context) ([]string, error) {
 	return dars, nil
 }
 
-func (d *DappClient) PrepareReturn(ctx context.Context, req *JsPrepareSubmissionRequest) (*JsPrepareSubmissionResponse, error) {
+func (d *DappClient) PrepareReturn(ctx context.Context, req *model.JsPrepareSubmissionRequest) (*model.JsPrepareSubmissionResponse, error) {
 	if d.sdk.UserLedger() == nil {
-		return nil, ErrNoUserLedger
+		return nil, model.ErrNoUserLedger
 	}
 
 	commands, err := d.convertToInternalCommands(req.Commands)
@@ -170,15 +170,15 @@ func (d *DappClient) PrepareReturn(ctx context.Context, req *JsPrepareSubmission
 		return nil, fmt.Errorf("failed to prepare submission: %w", err)
 	}
 
-	return &JsPrepareSubmissionResponse{
+	return &model.JsPrepareSubmissionResponse{
 		PreparedTransaction:     base64.StdEncoding.EncodeToString(prepared.PreparedTransaction),
 		PreparedTransactionHash: prepared.PreparedTransactionHash,
 	}, nil
 }
 
-func (d *DappClient) PrepareExecute(ctx context.Context, req *JsPrepareSubmissionRequest) error {
+func (d *DappClient) PrepareExecute(ctx context.Context, req *model.JsPrepareSubmissionRequest) error {
 	if d.sdk.UserLedger() == nil {
-		return ErrNoUserLedger
+		return model.ErrNoUserLedger
 	}
 
 	commands, err := d.convertToInternalCommands(req.Commands)
@@ -202,7 +202,7 @@ func (d *DappClient) PrepareExecute(ctx context.Context, req *JsPrepareSubmissio
 	d.txCache[commandID] = prepared
 	d.mu.Unlock()
 
-	d.emitter.EmitTxChanged(&TxChangedPendingEvent{
+	d.emitter.EmitTxChanged(&model.TxChangedPendingEvent{
 		Status:    "pending",
 		CommandID: commandID,
 	})
@@ -210,9 +210,9 @@ func (d *DappClient) PrepareExecute(ctx context.Context, req *JsPrepareSubmissio
 	return nil
 }
 
-func (d *DappClient) PrepareExecuteAndWait(ctx context.Context, req *JsPrepareSubmissionRequest) (*TxChangedExecutedEvent, error) {
+func (d *DappClient) PrepareExecuteAndWait(ctx context.Context, req *model.JsPrepareSubmissionRequest) (*model.TxChangedExecutedEvent, error) {
 	if d.sdk.UserLedger() == nil {
-		return nil, ErrNoUserLedger
+		return nil, model.ErrNoUserLedger
 	}
 
 	commands, err := d.convertToInternalCommands(req.Commands)
@@ -232,17 +232,17 @@ func (d *DappClient) PrepareExecuteAndWait(ctx context.Context, req *JsPrepareSu
 		return nil, fmt.Errorf("failed to prepare submission: %w", err)
 	}
 
-	d.emitter.EmitTxChanged(&TxChangedPendingEvent{
+	d.emitter.EmitTxChanged(&model.TxChangedPendingEvent{
 		Status:    "pending",
 		CommandID: commandID,
 	})
 
-	return nil, ErrSignatureRequired
+	return nil, model.ErrSignatureRequired
 }
 
-func (d *DappClient) LedgerApi(ctx context.Context, req *LedgerApiRequest) (*LedgerApiResult, error) {
+func (d *DappClient) LedgerApi(ctx context.Context, req *model.LedgerApiRequest) (*model.LedgerApiResult, error) {
 	if d.sdk.AuthTokenProvider() == nil {
-		return nil, ErrNotAuthenticated
+		return nil, model.ErrNotAuthenticated
 	}
 
 	token, err := d.sdk.AuthTokenProvider().GetUserAccessToken(ctx)
@@ -270,14 +270,14 @@ func (d *DappClient) LedgerApi(ctx context.Context, req *LedgerApiRequest) (*Led
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	return &LedgerApiResult{
+	return &model.LedgerApiResult{
 		Response: string(body),
 	}, nil
 }
 
-func (d *DappClient) RequestAccounts(ctx context.Context) ([]*Wallet, error) {
+func (d *DappClient) RequestAccounts(ctx context.Context) ([]*model.Wallet, error) {
 	if d.sdk.UserLedger() == nil {
-		return nil, ErrNoUserLedger
+		return nil, model.ErrNoUserLedger
 	}
 
 	parties, err := d.sdk.UserLedger().ListWallets(ctx)
@@ -285,7 +285,7 @@ func (d *DappClient) RequestAccounts(ctx context.Context) ([]*Wallet, error) {
 		return nil, fmt.Errorf("failed to list wallets: %w", err)
 	}
 
-	wallets := make([]*Wallet, 0, len(parties))
+	wallets := make([]*model.Wallet, 0, len(parties))
 	for _, party := range parties {
 		syncResp, err := d.sdk.UserLedger().ListSynchronizers(ctx, party)
 		if err != nil {
@@ -297,7 +297,7 @@ func (d *DappClient) RequestAccounts(ctx context.Context) ([]*Wallet, error) {
 			networkID = fmt.Sprintf("canton:%s", syncResp.ConnectedSynchronizers[0].SynchronizerID)
 		}
 
-		wallets = append(wallets, &Wallet{
+		wallets = append(wallets, &model.Wallet{
 			Address:         string(party),
 			NetworkID:       networkID,
 			SigningProvider: "local",
@@ -307,8 +307,8 @@ func (d *DappClient) RequestAccounts(ctx context.Context) ([]*Wallet, error) {
 	return wallets, nil
 }
 
-func (d *DappClient) SubscribeAccountsChanged(ctx context.Context) (<-chan []*Wallet, error) {
-	ch := make(chan []*Wallet, 10)
+func (d *DappClient) SubscribeAccountsChanged(ctx context.Context) (<-chan []*model.Wallet, error) {
+	ch := make(chan []*model.Wallet, 10)
 	d.emitter.AddAccountsListener(ch)
 	return ch, nil
 }
@@ -323,20 +323,6 @@ func (d *DappClient) convertToInternalCommands(commands interface{}) (interface{
 	return commands, nil
 }
 
-func (d *DappClient) convertDisclosedContracts(contracts []*DisclosedContract) []*model.DisclosedContract {
-	if contracts == nil {
-		return nil
-	}
-
-	result := make([]*model.DisclosedContract, len(contracts))
-	for i, c := range contracts {
-		blobBytes, _ := base64.StdEncoding.DecodeString(c.CreatedEventBlob)
-		result[i] = &model.DisclosedContract{
-			TemplateID:       c.TemplateID,
-			ContractID:       c.ContractID,
-			CreatedEventBlob: blobBytes,
-			SynchronizerID:   c.SynchronizerID,
-		}
-	}
-	return result
+func (d *DappClient) convertDisclosedContracts(contracts []*model.DisclosedContract) []*model.DisclosedContract {
+	return contracts
 }

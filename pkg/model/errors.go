@@ -1,4 +1,4 @@
-package dapp
+package model
 
 import "errors"
 

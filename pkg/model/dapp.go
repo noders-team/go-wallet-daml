@@ -1,4 +1,4 @@
-package dapp
+package model
 
 type StatusEvent struct {
 	Kernel             *KernelInfo  `json:"kernel"`
@@ -31,20 +31,13 @@ type SessionInfo struct {
 }
 
 type JsPrepareSubmissionRequest struct {
-	CommandID                     string               `json:"commandId,omitempty"`
-	Commands                      interface{}          `json:"commands"`
-	ActAs                         []string             `json:"actAs,omitempty"`
-	ReadAs                        []string             `json:"readAs,omitempty"`
-	DisclosedContracts            []*DisclosedContract `json:"disclosedContracts,omitempty"`
-	SynchronizerID                string               `json:"synchronizerId,omitempty"`
-	PackageIDSelectionPreference  []string             `json:"packageIdSelectionPreference,omitempty"`
-}
-
-type DisclosedContract struct {
-	TemplateID       string `json:"templateId,omitempty"`
-	ContractID       string `json:"contractId,omitempty"`
-	CreatedEventBlob string `json:"createdEventBlob"`
-	SynchronizerID   string `json:"synchronizerId,omitempty"`
+	CommandID                    string               `json:"commandId,omitempty"`
+	Commands                     interface{}          `json:"commands"`
+	ActAs                        []string             `json:"actAs,omitempty"`
+	ReadAs                       []string             `json:"readAs,omitempty"`
+	DisclosedContracts           []*DisclosedContract `json:"disclosedContracts,omitempty"`
+	SynchronizerID               string               `json:"synchronizerId,omitempty"`
+	PackageIDSelectionPreference []string             `json:"packageIdSelectionPreference,omitempty"`
 }
 
 type JsPrepareSubmissionResponse struct {
