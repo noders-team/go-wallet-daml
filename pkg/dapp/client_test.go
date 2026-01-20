@@ -10,25 +10,35 @@ import (
 	"github.com/noders-team/go-wallet-daml/pkg/sdk"
 	"github.com/noders-team/go-wallet-daml/pkg/testutil"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
 
-func TestDarsAvailable(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+type DappClientTestSuite struct {
+	suite.Suite
+	ctx          context.Context
+	cancel       context.CancelFunc
+	walletSDK    *sdk.WalletSDK
+	dappClient   *DappClient
+	grpcAddr     string
+	scanProxyURL string
+}
 
-	grpcAddr := testutil.GetGrpcAddr()
-	scanProxyURL := testutil.GetScanProxyBaseURL()
+func (s *DappClientTestSuite) SetupSuite() {
+	s.ctx, s.cancel = context.WithTimeout(context.Background(), 3*time.Minute)
 
-	walletSDK := sdk.NewWalletSDK()
-	walletSDK.Configure(sdk.Config{
+	s.grpcAddr = testutil.GetGrpcAddr()
+	s.scanProxyURL = testutil.GetScanProxyBaseURL()
+
+	s.walletSDK = sdk.NewWalletSDK()
+	s.walletSDK.Configure(sdk.Config{
 		AuthFactory: func() auth.AuthController {
 			return auth.NewMockAuthController("app-provider")
 		},
 		LedgerFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error) {
 			return controller.NewLedgerController(
 				userID,
-				grpcAddr,
-				scanProxyURL,
+				s.grpcAddr,
+				s.scanProxyURL,
 				provider,
 				isAdmin,
 			)
@@ -36,7 +46,7 @@ func TestDarsAvailable(t *testing.T) {
 		TokenStandardFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error) {
 			return controller.NewTokenStandardController(
 				userID,
-				grpcAddr,
+				s.grpcAddr,
 				provider,
 				isAdmin,
 			)
@@ -44,20 +54,34 @@ func TestDarsAvailable(t *testing.T) {
 		ValidatorFactory: func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error) {
 			return controller.NewValidatorController(
 				userID,
-				grpcAddr,
-				scanProxyURL,
+				s.grpcAddr,
+				s.scanProxyURL,
 				provider,
 			)
 		},
 	})
-	require.NoError(t, walletSDK.Connect(ctx))
 
-	dappClient := NewDappClient(walletSDK, scanProxyURL)
-	require.NotNil(t, dappClient)
+	err := s.walletSDK.Connect(s.ctx)
+	require.NoError(s.T(), err)
 
-	dars, err := dappClient.DarsAvailable(ctx)
-	require.NoError(t, err)
-	require.NotEmpty(t, dars)
+	s.dappClient = NewDappClient(s.walletSDK, s.scanProxyURL)
+	require.NotNil(s.T(), s.dappClient)
+}
+
+func (s *DappClientTestSuite) TearDownSuite() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+}
+
+func TestDappClientTestSuite(t *testing.T) {
+	suite.Run(t, new(DappClientTestSuite))
+}
+
+func (s *DappClientTestSuite) TestDarsAvailable() {
+	dars, err := s.dappClient.DarsAvailable(s.ctx)
+	require.NoError(s.T(), err)
+	require.NotEmpty(s.T(), dars)
 
 	foundSpliceAmulet := false
 	for _, dar := range dars {
@@ -66,5 +90,19 @@ func TestDarsAvailable(t *testing.T) {
 			break
 		}
 	}
-	require.True(t, foundSpliceAmulet, "splice-amulet package should be available")
+	require.True(s.T(), foundSpliceAmulet, "splice-amulet package should be available")
+}
+
+func (s *DappClientTestSuite) TestRequestAccounts() {
+	wallets, err := s.dappClient.RequestAccounts(s.ctx)
+	require.NoError(s.T(), err)
+	require.NotEmpty(s.T(), wallets)
+
+	require.True(s.T(), len(wallets) >= 1, "there should be at least one wallet account")
+	for _, wallet := range wallets {
+		require.NotEmpty(s.T(), wallet.Address, "wallet address should not be empty")
+		require.NotEmpty(s.T(), wallet.NetworkID, "wallet networkID should not be empty")
+		require.Equal(s.T(), "local", wallet.SigningProvider, "wallet signing provider should be 'local'")
+		require.Contains(s.T(), wallet.NetworkID, "canton:", "networkID should be in canton format")
+	}
 }
