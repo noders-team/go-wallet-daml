@@ -2,6 +2,7 @@ package dapp
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
+	"github.com/noders-team/go-daml/pkg/types"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/crypto"
@@ -257,7 +259,8 @@ func (s *DappClientTestSuite) TestPrepareExecuteAndWait() {
 	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
 
 	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID, mintAmount, "", string(dsoPartyID))
+	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID,
+		mintAmount, "", string(dsoPartyID))
 	require.NoError(s.T(), err)
 
 	time.Sleep(5 * time.Second)
@@ -297,6 +300,230 @@ func (s *DappClientTestSuite) TestPrepareExecuteAndWait() {
 	require.NotEmpty(s.T(), result.Payload.UpdateID, "update ID should not be empty")
 }
 
+func (s *DappClientTestSuite) TestPrepareReturnWithExternalParty() {
+	cl := testutil.GetClient()
+	dsoPartyID := testutil.GetDsoPartyID()
+	synchronizerID := testutil.GetSynchronizerID()
+
+	externalObserverID, err := allocateExternalPartyWithCrypto(s.ctx, cl, "ext-observer")
+	require.NoError(s.T(), err)
+
+	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
+		{Type: damlModel.CanReadAs{Party: externalObserverID}},
+	})
+	require.NoError(s.T(), err)
+
+	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
+	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
+
+	mintAmount := decimal.NewFromFloat(100.0)
+	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID,
+		mintAmount, "", string(dsoPartyID))
+	require.NoError(s.T(), err)
+
+	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
+	require.NoError(s.T(), err)
+
+	var holdings []*controller.HoldingUTXO
+	for i := 0; i < 6; i++ {
+		time.Sleep(3 * time.Second)
+		holdings, err = s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+		if err == nil && len(holdings) > 0 {
+			break
+		}
+	}
+	require.NoError(s.T(), err)
+	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
+
+	transferAmount := decimal.NewFromFloat(10.0)
+	transferResult, err := s.walletSDK.TokenStandard().CreateTransfer(
+		s.ctx,
+		dsoPartyID,
+		dsoPartyID,
+		transferAmount,
+		holdings[0].InstrumentID,
+		holdings[0].InstrumentAdmin,
+		[]string{holdings[0].ContractID},
+		"test-dapp-ext-prepare-return",
+	)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), transferResult)
+
+	req := &model.JsPrepareSubmissionRequest{
+		Commands: []*damlModel.Command{transferResult.Command},
+		ActAs:    []string{string(dsoPartyID)},
+		ReadAs:   []string{externalObserverID},
+	}
+
+	resp, err := s.dappClient.PrepareReturn(s.ctx, req)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), resp)
+	require.NotEmpty(s.T(), resp.PreparedTransaction, "prepared transaction should not be empty")
+	require.NotEmpty(s.T(), resp.PreparedTransactionHash, "prepared transaction hash should not be empty")
+}
+
+func (s *DappClientTestSuite) TestPrepareExecuteWithExternalParty() {
+	cl := testutil.GetClient()
+	dsoPartyID := testutil.GetDsoPartyID()
+	synchronizerID := testutil.GetSynchronizerID()
+
+	receiverPartyID, err := allocatePartyWithCrypto(s.ctx, cl, "receiver")
+	require.NoError(s.T(), err)
+
+	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
+		{Type: damlModel.CanActAs{Party: receiverPartyID}},
+		{Type: damlModel.CanReadAs{Party: receiverPartyID}},
+	})
+	require.NoError(s.T(), err)
+
+	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
+	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
+
+	mintAmount := decimal.NewFromFloat(100.0)
+	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx,
+		dsoPartyID, mintAmount, "", string(dsoPartyID))
+	require.NoError(s.T(), err)
+
+	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
+	require.NoError(s.T(), err)
+
+	holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	require.NoError(s.T(), err)
+	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
+
+	s.walletSDK.TokenStandard().SetPartyID(model.PartyID(receiverPartyID))
+	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
+	initialBalance, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	require.NoError(s.T(), err)
+	require.Empty(s.T(), initialBalance, "receiver party should have no holdings initially")
+
+	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
+	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
+
+	now := time.Now().UTC()
+	preapprovalCmd := &damlModel.Command{
+		Command: &damlModel.CreateCommand{
+			TemplateID: "3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1:Splice.AmuletRules:TransferPreapproval",
+			Arguments: map[string]interface{}{
+				"dso":           types.PARTY(dsoPartyID),
+				"receiver":      types.PARTY(receiverPartyID),
+				"provider":      types.PARTY(dsoPartyID),
+				"validFrom":     types.TIMESTAMP(now),
+				"lastRenewedAt": types.TIMESTAMP(now),
+				"expiresAt":     types.TIMESTAMP(now.Add(24 * time.Hour)),
+			},
+		},
+	}
+
+	preapprovalReq := &model.JsPrepareSubmissionRequest{
+		Commands: []*damlModel.Command{preapprovalCmd},
+		ActAs:    []string{string(dsoPartyID), receiverPartyID},
+		ReadAs:   []string{},
+	}
+
+	preapprovalResult, err := s.dappClient.PrepareExecuteAndWait(s.ctx, preapprovalReq)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), preapprovalResult)
+	require.Equal(s.T(), "executed", preapprovalResult.Status)
+
+	time.Sleep(3 * time.Second)
+
+	transferAmount := decimal.NewFromFloat(10.0)
+	transferResult, err := s.walletSDK.TokenStandard().CreateTransfer(
+		s.ctx,
+		dsoPartyID,
+		model.PartyID(receiverPartyID),
+		transferAmount,
+		holdings[0].InstrumentID,
+		holdings[0].InstrumentAdmin,
+		[]string{holdings[0].ContractID},
+		"test-dapp-ext-execute",
+	)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), transferResult)
+
+	req := &model.JsPrepareSubmissionRequest{
+		Commands: []*damlModel.Command{transferResult.Command},
+		ActAs:    []string{string(dsoPartyID), receiverPartyID},
+		ReadAs:   []string{},
+	}
+
+	result, err := s.dappClient.PrepareExecuteAndWait(s.ctx, req)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), result)
+	require.Equal(s.T(), "executed", result.Status)
+
+	s.walletSDK.TokenStandard().SetPartyID(model.PartyID(receiverPartyID))
+	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
+
+	finalHoldings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	require.NoError(s.T(), err)
+	require.NotEmpty(s.T(), finalHoldings, "receiver party should have holdings after transfer")
+
+	totalBalance := decimal.Zero
+	for _, holding := range finalHoldings {
+		totalBalance = totalBalance.Add(holding.Amount)
+	}
+	require.True(s.T(), totalBalance.GreaterThanOrEqual(transferAmount), "receiver party balance should be at least %s, got %s", transferAmount.String(), totalBalance.String())
+}
+
+func (s *DappClientTestSuite) TestPrepareExecuteAndWaitWithExternalParty() {
+	cl := testutil.GetClient()
+	dsoPartyID := testutil.GetDsoPartyID()
+	synchronizerID := testutil.GetSynchronizerID()
+
+	externalObserverID, err := allocateExternalPartyWithCrypto(s.ctx, cl, "ext-observer")
+	require.NoError(s.T(), err)
+
+	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
+		{Type: damlModel.CanReadAs{Party: externalObserverID}},
+	})
+	require.NoError(s.T(), err)
+
+	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
+	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
+
+	mintAmount := decimal.NewFromFloat(100.0)
+	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID,
+		mintAmount, "", string(dsoPartyID))
+	require.NoError(s.T(), err)
+
+	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
+	require.NoError(s.T(), err)
+
+	holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	require.NoError(s.T(), err)
+	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
+
+	transferAmount := decimal.NewFromFloat(10.0)
+	transferResult, err := s.walletSDK.TokenStandard().CreateTransfer(
+		s.ctx,
+		dsoPartyID,
+		dsoPartyID,
+		transferAmount,
+		holdings[0].InstrumentID,
+		holdings[0].InstrumentAdmin,
+		[]string{holdings[0].ContractID},
+		"test-dapp-ext-execute-wait",
+	)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), transferResult)
+
+	req := &model.JsPrepareSubmissionRequest{
+		Commands: []*damlModel.Command{transferResult.Command},
+		ActAs:    []string{string(dsoPartyID)},
+		ReadAs:   []string{externalObserverID},
+	}
+
+	result, err := s.dappClient.PrepareExecuteAndWait(s.ctx, req)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), result)
+	require.Equal(s.T(), "executed", result.Status)
+	require.NotEmpty(s.T(), result.CommandID, "command ID should not be empty")
+	require.NotNil(s.T(), result.Payload)
+	require.NotEmpty(s.T(), result.Payload.UpdateID, "update ID should not be empty")
+}
+
 func allocatePartyWithCrypto(ctx context.Context, cl *client.DamlBindingClient, displayName string) (string, error) {
 	keyPair, err := crypto.CreateKeyPair()
 	if err != nil {
@@ -318,4 +545,179 @@ func allocatePartyWithCrypto(ctx context.Context, cl *client.DamlBindingClient, 
 	time.Sleep(2 * time.Second)
 
 	return partyDetails.Party, nil
+}
+
+func allocateExternalPartyWithCrypto(ctx context.Context, cl *client.DamlBindingClient, displayName string) (string, error) {
+	syncResp, err := cl.StateService.GetConnectedSynchronizers(ctx, &damlModel.GetConnectedSynchronizersRequest{})
+	if err != nil {
+		return "", err
+	}
+	if len(syncResp.ConnectedSynchronizers) == 0 {
+		return "", fmt.Errorf("no connected synchronizers")
+	}
+	synchronizerID := syncResp.ConnectedSynchronizers[0].SynchronizerID
+
+	participantID, err := cl.PartyMng.GetParticipantID(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	keyPair, err := crypto.CreateKeyPair()
+	if err != nil {
+		return "", err
+	}
+
+	keyFingerprint, err := crypto.CreateFingerprintFromKey(keyPair.PublicKey)
+	if err != nil {
+		return "", err
+	}
+
+	namespace := keyFingerprint
+	partyID := fmt.Sprintf("%s-%s", displayName, uuid.New().String()[:8])
+	fullPartyID := fmt.Sprintf("%s::%s", partyID, namespace)
+
+	onboardingTxs, multiHashSigs, err := createOnboardingTransactions(
+		ctx, cl, fullPartyID, keyPair.PublicKey, keyPair.PrivateKey,
+		participantID, keyFingerprint,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	allocatedPartyID, err := cl.PartyMng.AllocateExternalParty(
+		ctx, synchronizerID, onboardingTxs, multiHashSigs, "",
+	)
+	if err != nil {
+		return "", err
+	}
+
+	time.Sleep(5 * time.Second)
+
+	return allocatedPartyID, nil
+}
+
+func createOnboardingTransactions(
+	ctx context.Context,
+	cl *client.DamlBindingClient,
+	partyID string,
+	publicKeyBase64 string,
+	privateKeyBase64 string,
+	participantID string,
+	keyFingerprint string,
+) ([]damlModel.SignedTransaction, []damlModel.Signature, error) {
+	publicKeyBytes, err := base64.StdEncoding.DecodeString(publicKeyBase64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode public key: %w", err)
+	}
+
+	pubKey := &damlModel.PublicKey{
+		Format:  3,
+		Key:     publicKeyBytes,
+		Scheme:  int32(damlModel.SigningKeySchemeED25519),
+		KeySpec: int32(damlModel.SigningKeySpecCurve25519),
+		Usage:   []int32{},
+	}
+
+	storeID := &damlModel.StoreID{Value: "authorized"}
+
+	proposals := []*damlModel.GenerateTransactionProposal{
+		{
+			Operation: damlModel.OperationAddReplace,
+			Serial:    1,
+			Mapping: &damlModel.NamespaceDelegationMapping{
+				Namespace:        keyFingerprint,
+				TargetKey:        *pubKey,
+				IsRootDelegation: true,
+			},
+			Store: storeID,
+		},
+		{
+			Operation: damlModel.OperationAddReplace,
+			Serial:    1,
+			Mapping: &damlModel.PartyToKeyMapping{
+				Party:       partyID,
+				Threshold:   1,
+				SigningKeys: []damlModel.PublicKey{*pubKey},
+			},
+			Store: storeID,
+		},
+		{
+			Operation: damlModel.OperationAddReplace,
+			Serial:    1,
+			Mapping: &damlModel.PartyToParticipantMapping{
+				Party:     partyID,
+				Threshold: 1,
+				Participants: []damlModel.HostingParticipant{
+					{
+						ParticipantUID: participantID,
+						Permission:     damlModel.ParticipantPermissionConfirmation,
+					},
+				},
+			},
+			Store: storeID,
+		},
+	}
+
+	genResp, err := cl.TopologyManagerWrite.GenerateTransactions(ctx, &damlModel.GenerateTransactionsRequest{
+		Proposals: proposals,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate transactions: %w", err)
+	}
+
+	onboardingTxs := make([]damlModel.SignedTransaction, len(genResp.GeneratedTransactions))
+	transactionHashes := make([][]byte, len(genResp.GeneratedTransactions))
+
+	for i, genTx := range genResp.GeneratedTransactions {
+		txHashBase64 := base64.StdEncoding.EncodeToString(genTx.TransactionHash)
+		signatureBase64, err := crypto.SignTransactionHash(txHashBase64, privateKeyBase64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to sign transaction hash: %w", err)
+		}
+
+		signatureBytes, err := base64.StdEncoding.DecodeString(signatureBase64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decode signature: %w", err)
+		}
+
+		onboardingTxs[i] = damlModel.SignedTransaction{
+			Transaction: genTx.SerializedTransaction,
+			Signatures: []damlModel.Signature{
+				{
+					Format:               damlModel.SignatureFormatConcat,
+					Signature:            signatureBytes,
+					SignedBy:             keyFingerprint,
+					SigningAlgorithmSpec: damlModel.SigningAlgorithmSpecED25519,
+				},
+			},
+		}
+		transactionHashes[i] = genTx.TransactionHash
+	}
+
+	multiHash, err := crypto.ComputeMultiHashForTopology(transactionHashes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to compute multi-hash: %w", err)
+	}
+
+	multiHashBase64 := base64.StdEncoding.EncodeToString(multiHash)
+	multiHashSignatureBase64, err := crypto.SignTransactionHash(multiHashBase64, privateKeyBase64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to sign multi-hash: %w", err)
+	}
+
+	multiHashSignatureBytes, err := base64.StdEncoding.DecodeString(multiHashSignatureBase64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode multi-hash signature: %w", err)
+	}
+
+	multiHashSigs := []damlModel.Signature{
+		{
+			Format:               damlModel.SignatureFormatConcat,
+			Signature:            multiHashSignatureBytes,
+			SignedBy:             keyFingerprint,
+			SigningAlgorithmSpec: damlModel.SigningAlgorithmSpecED25519,
+		},
+	}
+
+	return onboardingTxs, multiHashSigs, nil
 }
