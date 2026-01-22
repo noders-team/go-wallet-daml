@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
+	"github.com/noders-team/go-daml/pkg/types"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/crypto"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
@@ -585,17 +586,23 @@ func (l *LedgerController) AllocateExternalParty(ctx context.Context, signedHash
 	return &model.AllocateExternalPartyResponse{PartyID: partyID}, nil
 }
 
-func (l *LedgerController) CreateTransferPreapprovalCommand(ctx context.Context, providerParty model.PartyID, receiverParty model.PartyID, dsoParty model.PartyID) (*model.WrappedCommand, error) {
+func (l *LedgerController) CreateTransferPreapprovalCommand(
+	providerParty, receiverParty, dsoParty string,
+	validFrom, lastRenewedAt, expiresAt time.Time,
+) *model.WrappedCommand {
 	return &model.WrappedCommand{
 		CreateCommand: &model.CreateCommand{
-			TemplateID: "#splice-wallet:Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal",
+			TemplateID: "splice-amulet:Splice.AmuletRules:TransferPreapproval",
 			CreateArguments: map[string]interface{}{
-				"provider":    providerParty,
-				"receiver":    receiverParty,
-				"expectedDso": dsoParty,
+				"provider":      types.PARTY(providerParty),
+				"receiver":      types.PARTY(receiverParty),
+				"dso":           dsoParty,
+				"validFrom":     types.TIMESTAMP(validFrom),
+				"lastRenewedAt": types.TIMESTAMP(lastRenewedAt),
+				"expiresAt":     types.TIMESTAMP(expiresAt),
 			},
 		},
-	}, nil
+	}
 }
 
 func (l *LedgerController) LedgerEnd(ctx context.Context) (int64, error) {

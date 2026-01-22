@@ -6,6 +6,8 @@ toolchain go1.24.10
 
 replace github.com/digital-asset/dazl-client/v8 => github.com/noders-team/dazl-client/v8 v8.7.1-2
 
+replace github.com/noders-team/go-daml => ../go-daml
+
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0

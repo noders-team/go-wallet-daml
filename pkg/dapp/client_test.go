@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
-	"github.com/noders-team/go-daml/pkg/types"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/crypto"
@@ -259,7 +258,8 @@ func (s *DappClientTestSuite) TestPrepareExecuteAndWait() {
 	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
 
 	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID,
+	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(
+		s.ctx, dsoPartyID,
 		mintAmount, "", string(dsoPartyID))
 	require.NoError(s.T(), err)
 
@@ -401,22 +401,31 @@ func (s *DappClientTestSuite) TestPrepareExecuteWithExternalParty() {
 	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
 
 	now := time.Now().UTC()
-	preapprovalCmd := &damlModel.Command{
-		Command: &damlModel.CreateCommand{
-			TemplateID: "3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1:Splice.AmuletRules:TransferPreapproval",
-			Arguments: map[string]interface{}{
-				"dso":           types.PARTY(dsoPartyID),
-				"receiver":      types.PARTY(receiverPartyID),
-				"provider":      types.PARTY(dsoPartyID),
-				"validFrom":     types.TIMESTAMP(now),
-				"lastRenewedAt": types.TIMESTAMP(now),
-				"expiresAt":     types.TIMESTAMP(now.Add(24 * time.Hour)),
+	wrappedCmd := s.walletSDK.UserLedger().CreateTransferPreapprovalCommand(
+		string(dsoPartyID),
+		receiverPartyID,
+		string(dsoPartyID),
+		now,
+		now,
+		now.Add(24*time.Hour),
+	)
+	/*
+		preapprovalCmd := &damlModel.Command{
+			Command: &damlModel.CreateCommand{
+				TemplateID: "3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1:Splice.AmuletRules:TransferPreapproval",
+				Arguments: map[string]interface{}{
+					"dso":           types.PARTY(dsoPartyID),
+					"receiver":      types.PARTY(receiverPartyID),
+					"provider":      types.PARTY(dsoPartyID),
+					"validFrom":     types.TIMESTAMP(now),
+					"lastRenewedAt": types.TIMESTAMP(now),
+					"expiresAt":     types.TIMESTAMP(now.Add(24 * time.Hour)),
+				},
 			},
-		},
-	}
+		}*/
 
 	preapprovalReq := &model.JsPrepareSubmissionRequest{
-		Commands: []*damlModel.Command{preapprovalCmd},
+		Commands: []*damlModel.Command{wrappedCmd.CreateCommand.ToDamlCreateCommand()},
 		ActAs:    []string{string(dsoPartyID), receiverPartyID},
 		ReadAs:   []string{},
 	}

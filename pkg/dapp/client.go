@@ -217,7 +217,9 @@ func (d *DappClient) PrepareExecuteAndWait(ctx context.Context, req *model.JsPre
 		return nil, fmt.Errorf("failed to convert commands: %w", err)
 	}
 
-	result, err := d.sdk.UserLedger().SubmitCommandAndWait(ctx, commands, commandID, d.convertDisclosedContracts(req.DisclosedContracts), req.ActAs, req.ReadAs)
+	result, err := d.sdk.UserLedger().SubmitCommandAndWait(ctx,
+		commands, commandID,
+		d.convertDisclosedContracts(req.DisclosedContracts), req.ActAs, req.ReadAs)
 	if err != nil {
 		d.emitter.EmitTxChanged(&model.TxChangedFailedEvent{
 			Status:    "failed",
