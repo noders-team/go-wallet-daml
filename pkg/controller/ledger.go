@@ -592,11 +592,11 @@ func (l *LedgerController) CreateTransferPreapprovalCommand(
 ) *model.WrappedCommand {
 	return &model.WrappedCommand{
 		CreateCommand: &model.CreateCommand{
-			TemplateID: "splice-amulet:Splice.AmuletRules:TransferPreapproval",
+			TemplateID: "#splice-amulet:Splice.AmuletRules:TransferPreapproval",
 			CreateArguments: map[string]interface{}{
 				"provider":      types.PARTY(providerParty),
 				"receiver":      types.PARTY(receiverParty),
-				"dso":           dsoParty,
+				"dso":           types.PARTY(dsoParty),
 				"validFrom":     types.TIMESTAMP(validFrom),
 				"lastRenewedAt": types.TIMESTAMP(lastRenewedAt),
 				"expiresAt":     types.TIMESTAMP(expiresAt),
