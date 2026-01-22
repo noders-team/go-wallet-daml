@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -400,6 +401,14 @@ func (s *DappClientTestSuite) TestPrepareExecuteWithExternalParty() {
 	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
 	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
 
+	amuletRulesContractID := testutil.GetAmuletRulesTemplateID()
+	require.NotEmpty(s.T(), amuletRulesContractID, "AmuletRules contract ID should be set")
+
+	resRules := strings.Split(amuletRulesContractID, ":")
+	require.NotEmpty(s.T(), resRules, "AmuletRules contract ID should be in format packageID:moduleName:entityName")
+
+	transferPreapprovalTemplateID := resRules[0] + ":Splice.AmuletRules:TransferPreapproval"
+
 	now := time.Now().UTC()
 	wrappedCmd := s.walletSDK.UserLedger().CreateTransferPreapprovalCommand(
 		string(dsoPartyID),
@@ -409,23 +418,14 @@ func (s *DappClientTestSuite) TestPrepareExecuteWithExternalParty() {
 		now,
 		now.Add(24*time.Hour),
 	)
-	/*
-		preapprovalCmd := &damlModel.Command{
-			Command: &damlModel.CreateCommand{
-				TemplateID: "3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1:Splice.AmuletRules:TransferPreapproval",
-				Arguments: map[string]interface{}{
-					"dso":           types.PARTY(dsoPartyID),
-					"receiver":      types.PARTY(receiverPartyID),
-					"provider":      types.PARTY(dsoPartyID),
-					"validFrom":     types.TIMESTAMP(now),
-					"lastRenewedAt": types.TIMESTAMP(now),
-					"expiresAt":     types.TIMESTAMP(now.Add(24 * time.Hour)),
-				},
-			},
-		}*/
+
+	damlCmd := wrappedCmd.CreateCommand.ToDamlCreateCommand()
+	createCmd, ok := damlCmd.Command.(*damlModel.CreateCommand)
+	require.True(s.T(), ok, "command should be CreateCommand")
+	createCmd.TemplateID = transferPreapprovalTemplateID
 
 	preapprovalReq := &model.JsPrepareSubmissionRequest{
-		Commands: []*damlModel.Command{wrappedCmd.CreateCommand.ToDamlCreateCommand()},
+		Commands: []*damlModel.Command{damlCmd},
 		ActAs:    []string{string(dsoPartyID), receiverPartyID},
 		ReadAs:   []string{},
 	}
