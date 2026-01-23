@@ -92,18 +92,95 @@ holdings, _ := walletSDK.TokenStandard().ListHoldingUtxos(ctx, true, 100)
 - **`Auth()`** - Returns AuthController
 - **`AuthTokenProvider()`** - Returns AuthTokenProvider
 
-### Core Components (`pkg/`)
+## API Reference
 
-- **`pkg/sdk/`** - High-level wallet SDK entry point with factory pattern
-- **`pkg/controller/`** - Core controllers
-  - **TokenStandardController** - Token operations (mint, transfer, burn, lock, UTXO management)
-  - **LedgerController** - Ledger state management and party operations
-  - **ValidatorController** - Validator rights and operations
-- **`pkg/auth/`** - Authentication (OAuth, JWT, mock mode)
-- **`pkg/crypto/`** - Cryptographic utilities (Ed25519, signing, hashing)
-- **`pkg/model/`** - Data models and type definitions
-- **`pkg/testutil/`** - Testing utilities and Docker container management
-- **`pkg/wrapper/`** - HTTP wrappers and scan proxy integration
+### TokenStandardController (`pkg/controller`)
+
+Main controller for Splice Token Standard operations.
+
+#### Token Operations
+- **`GetBalance(ctx)`** - Returns total Amulet balance
+- **`Transfer(ctx, receiver, amount)`** - Simplified transfer (auto-selects UTXOs)
+- **`CreateTransfer(ctx, sender, receiver, amount, instrumentID, instrumentAdmin, inputUtxos, memo)`** - Advanced transfer with explicit UTXO selection
+- **`CreateTap(ctx, receiver, amount, instrumentAdmin, instrumentID)`** - Mint new tokens (requires DSO rights)
+- **`Burn(ctx, amount)`** - Burn (destroy) tokens
+- **`Lock(ctx, amount, expiresAt)`** - Lock tokens until expiration
+- **`Unlock(ctx, lockContractID)`** - Unlock previously locked tokens
+- **`MergeHoldingUtxos(ctx, nodeLimit, partyID, inputUtxos)`** - Consolidate multiple UTXOs into one
+- **`UseMergeDelegations(ctx, walletParty, nodeLimit)`** - Use merge delegations for consolidation
+
+#### Queries & Views
+- **`ListHoldingUtxos(ctx, includeLocked, limit)`** - List available UTXOs (Amulets)
+- **`ListHoldingTransactions(ctx, beginExclusive, endInclusive)`** - List transaction history
+- **`FetchPendingTransferInstructionView(ctx)`** - List incoming transfer offers
+- **`FetchPendingAllocationInstructionView(ctx)`** - List pending allocation instructions
+- **`FetchPendingAllocationRequestView(ctx)`** - List pending allocation requests
+- **`ListContractsByInterface(ctx, interfaceID)`** - Generic contract lookup by interface
+
+#### Feature App Rights
+- **`SelfGrantFeatureAppRights(ctx)`** - Self-grant rights for fee reduction
+- **`LookupFeaturedApps(ctx, maxRetries, delayMs)`** - Find active featured app rights
+
+#### Configuration
+- **`SetPartyID(partyID)`** / **`GetPartyID()`** - Manage active party
+- **`SetSynchronizerID(syncID)`** / **`GetSynchronizerID()`** - Manage active synchronizer
+
+### LedgerController (`pkg/controller`)
+
+Low-level ledger interactions and party management.
+
+#### Submission & Execution
+- **`SubmitCommand(ctx, commands, commandID, disclosedContracts)`** - Async command submission
+- **`SubmitCommandAndWait(ctx, commands, commandID, disclosedContracts, actAs, readAs)`** - Sync submission
+- **`PrepareSubmission(ctx, commands, commandID, disclosedContracts, actAs, readAs)`** - Prepare transaction for external signing
+- **`ExecuteSubmission(ctx, prepared, signature, publicKey, commandID)`** - Execute externally signed transaction
+- **`PrepareSignAndExecuteTransaction(ctx, commands, privateKey, commandID, disclosedContracts)`** - Full flow with local signing
+
+#### Party & Identity
+- **`AllocateInternalParty(ctx, partyHint)`** - Create new internal party
+- **`AllocateExternalParty(ctx, signedHash, preparedParty, ...)`** - Onboard external party
+- **`ListWallets(ctx)`** - List all parties the user can act as
+- **`GetParticipantID(ctx)`** - Get local participant ID
+- **`GrantRights(ctx, readAs, actAs)`** - Grant user rights to other parties
+
+#### Ledger Queries
+- **`GetActiveContracts(ctx, filter)`** - Fetch current ledger state
+- **`GetTransactionTrees(ctx, filter, beginOffset, endOffset)`** - Fetch detailed transaction history
+- **`LedgerEnd(ctx)`** - Get current ledger offset
+- **`ListSynchronizers(ctx, partyID)`** - List connected synchronizers for a party
+
+### ValidatorController (`pkg/controller`)
+
+Operations related to validator nodes and Amulet rules.
+
+- **`GetValidatorUser(ctx)`** - Get the validator's primary party
+- **`GetAmuletRules(ctx)`** - Fetch current Amulet protocol configuration
+- **`GetOpenMiningRounds(ctx)`** - List currently active mining rounds
+- **`GetTransferPreApprovalByParty(ctx, receiverID)`** - Fetch pre-approval for a receiver
+
+### DappClient (`pkg/dapp`)
+
+HTTP client for dApp-specific server interactions.
+
+- **`Connect(ctx)`** / **`Disconnect(ctx)`** - Manage dApp session
+- **`Status(ctx)`** - Get dApp and network status
+- **`RequestAccounts(ctx)`** - List wallet accounts via dApp
+- **`DarsAvailable(ctx)`** - List DAR packages available on the dApp server
+- **`LedgerApi(ctx, req)`** - Execute raw Ledger API requests
+- **`PrepareReturn(ctx, req)`** - Prepare transaction and return for signing
+- **`PrepareExecute(ctx, req)`** - Prepare and trigger execution flow
+- **`PrepareExecuteAndWait(ctx, req)`** - Prepare, execute, and wait for event
+- **`SubscribeAccountsChanged(ctx)`** - Stream of account updates
+- **`SubscribeTxChanged(ctx)`** - Stream of transaction status events
+
+### Auth (`pkg/auth`)
+
+Authentication and token management.
+
+- **`AuthTokenProvider.GetUserAccessToken(ctx)`** - Get current user JWT
+- **`AuthTokenProvider.GetAdminAccessToken(ctx)`** - Get current admin JWT
+- **`AuthController.GetUserToken(ctx)`** - Authenticate and get user context
+- **`AuthController.GetAdminToken(ctx)`** - Authenticate and get admin context
 
 ## Usage Examples
 
@@ -270,6 +347,45 @@ go test -v -coverprofile=coverage.out ./...
 | `MergeHoldingUtxos` | Consolidate UTXOs | Yes |
 | `AllocateExternalParty` | Create external party | Yes |
 | `SelfGrantFeatureAppRights` | Grant app rights | No |
+
+## Dapp Operations
+
+For dApp-specific interactions, see the [DappClient API Reference](#dappclient-pkgdapp).
+
+### Dapp Initialization
+
+```go
+import "github.com/noders-team/go-wallet-daml/pkg/dapp"
+
+dappClient := dapp.NewDappClient(walletSDK, "http://localhost:3000")
+```
+
+### Event Subscriptions Example
+
+Subscribe to account changes or transaction updates:
+
+```go
+// Subscribe to account changes
+accountsChan, err := dappClient.SubscribeAccountsChanged(ctx)
+go func() {
+    for wallets := range accountsChan {
+        fmt.Printf("Accounts updated: %v\n", wallets)
+    }
+}()
+
+// Subscribe to transaction status changes
+txChan, err := dappClient.SubscribeTxChanged(ctx)
+go func() {
+    for event := range txChan {
+        switch e := event.(type) {
+        case *model.TxChangedExecutedEvent:
+            fmt.Printf("Tx executed: %s\n", e.Payload.UpdateID)
+        case *model.TxChangedFailedEvent:
+            fmt.Printf("Tx failed: %s\n", e.CommandID)
+        }
+    }
+}()
+```
 
 ## Troubleshooting
 
