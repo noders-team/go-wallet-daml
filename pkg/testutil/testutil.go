@@ -187,6 +187,11 @@ func Setup(ctx context.Context) error {
 
 		log.Info().Msg("DAR files uploaded successfully")
 
+		if err := ensurePackagesVetted(ctx, damlClient); err != nil {
+			setupErr = fmt.Errorf("failed to vet packages: %w", err)
+			return
+		}
+
 		allParties, err := damlClient.PartyMng.ListKnownParties(ctx, "", 1000, "")
 		if err != nil {
 			setupErr = fmt.Errorf("failed to list known parties: %w", err)
@@ -1117,4 +1122,99 @@ func getContractIDByTemplateID(ctx context.Context, cl *client.DamlBindingClient
 			return "", fmt.Errorf("timeout waiting for contract")
 		}
 	}
+}
+
+func ensurePackagesVetted(ctx context.Context, cl *client.DamlBindingClient) error {
+	if synchronizerID == "" {
+		return fmt.Errorf("synchronizer ID not set")
+	}
+
+	syncID := string(synchronizerID)
+
+	packages, err := cl.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	packagesByName := make(map[string]*damlModel.PackageDetails)
+	for _, pkg := range packages {
+		if pkg.Name != "" {
+			packagesByName[pkg.Name] = pkg
+		}
+	}
+
+	spliceAmulet, ok := packagesByName["splice-amulet"]
+	if !ok {
+		return fmt.Errorf("splice-amulet package not found")
+	}
+
+	listVettedReq := &damlModel.ListVettedPackagesRequest{
+		TopologyStateFilter: &damlModel.TopologyStateFilter{
+			SynchronizerIDs: []string{syncID},
+		},
+		PackageMetadataFilter: &damlModel.PackageMetadataFilter{
+			PackageIDs: []string{spliceAmulet.PackageID},
+		},
+	}
+
+	vettedResp, err := cl.PackageService.ListVettedPackages(ctx, listVettedReq)
+	if err != nil {
+		return fmt.Errorf("failed to list vetted packages: %w", err)
+	}
+
+	isVetted := false
+	for _, vp := range vettedResp.VettedPackages {
+		if vp.SynchronizerID == syncID {
+			for _, pkg := range vp.Packages {
+				if pkg.PackageID == spliceAmulet.PackageID {
+					isVetted = true
+					log.Info().
+						Str("packageID", pkg.PackageID).
+						Str("packageName", pkg.PackageName).
+						Str("synchronizerID", syncID).
+						Msg("Package already vetted")
+					break
+				}
+			}
+		}
+		if isVetted {
+			break
+		}
+	}
+
+	if !isVetted {
+		log.Info().
+			Str("packageID", spliceAmulet.PackageID).
+			Str("packageName", spliceAmulet.Name).
+			Str("synchronizerID", syncID).
+			Msg("Vetting package")
+
+		updateVettedReq := &damlModel.UpdateVettedPackagesRequest{
+			SynchronizerID: syncID,
+			Changes: []*damlModel.VettedPackagesChange{
+				{
+					Vet: &damlModel.VettedPackagesVet{
+						Packages: []*damlModel.VettedPackagesRef{
+							{
+								PackageID: spliceAmulet.PackageID,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, err = cl.PackageMng.UpdateVettedPackages(ctx, updateVettedReq)
+		if err != nil {
+			return fmt.Errorf("failed to vet package %s: %w", spliceAmulet.Name, err)
+		}
+
+		log.Info().
+			Str("packageID", spliceAmulet.PackageID).
+			Str("packageName", spliceAmulet.Name).
+			Str("synchronizerID", syncID).
+			Msg("Package vetted successfully")
+	}
+
+	return nil
 }

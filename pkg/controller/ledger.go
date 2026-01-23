@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
+	"github.com/noders-team/go-daml/pkg/types"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/crypto"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
@@ -187,7 +188,7 @@ func (l *LedgerController) GetSynchronizerID() (model.PartyID, error) {
 	return v.(model.PartyID), nil
 }
 
-func (l *LedgerController) PrepareSubmission(ctx context.Context, commands interface{}, commandID string, disclosedContracts []*model.DisclosedContract) (*model.PrepareSubmissionResponse, error) {
+func (l *LedgerController) PrepareSubmission(ctx context.Context, commands interface{}, commandID string, disclosedContracts []*model.DisclosedContract, actAs []string, readAs []string) (*model.PrepareSubmissionResponse, error) {
 	partyID, err := l.GetPartyID()
 	if err != nil {
 		return nil, err
@@ -198,20 +199,11 @@ func (l *LedgerController) PrepareSubmission(ctx context.Context, commands inter
 		return nil, err
 	}
 
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
+	commandID = commandIDOrNew(commandID)
 
-	var damlCommands []*damlModel.Command
-	switch cmds := commands.(type) {
-	case []*model.WrappedCommand:
-		for _, cmd := range cmds {
-			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
-		}
-	case *model.WrappedCommand:
-		damlCommands = append(damlCommands, convertWrappedCommand(cmds))
-	default:
-		return nil, fmt.Errorf("unsupported command type")
+	damlCommands, err := convertCommands(commands)
+	if err != nil {
+		return nil, err
 	}
 
 	var damlDisclosed []*damlModel.DisclosedContract
@@ -224,12 +216,19 @@ func (l *LedgerController) PrepareSubmission(ctx context.Context, commands inter
 		})
 	}
 
+	if len(actAs) == 0 {
+		actAs = []string{string(partyID)}
+	}
+	if readAs == nil {
+		readAs = []string{}
+	}
+
 	req := &damlModel.PrepareSubmissionRequest{
 		UserID:             l.userID,
 		CommandID:          commandID,
 		Commands:           damlCommands,
-		ActAs:              []string{string(partyID)},
-		ReadAs:             []string{},
+		ActAs:              actAs,
+		ReadAs:             readAs,
 		DisclosedContracts: damlDisclosed,
 		SynchronizerID:     string(syncID),
 	}
@@ -308,20 +307,11 @@ func (l *LedgerController) SubmitCommand(ctx context.Context, commands interface
 		return "", err
 	}
 
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
+	commandID = commandIDOrNew(commandID)
 
-	var damlCommands []*damlModel.Command
-	switch cmds := commands.(type) {
-	case []*model.WrappedCommand:
-		for _, cmd := range cmds {
-			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
-		}
-	case *model.WrappedCommand:
-		damlCommands = append(damlCommands, convertWrappedCommand(cmds))
-	default:
-		return "", fmt.Errorf("unsupported command type")
+	damlCommands, err := convertCommands(commands)
+	if err != nil {
+		return "", err
 	}
 
 	req := &damlModel.SubmitRequest{
@@ -347,8 +337,60 @@ func (l *LedgerController) SubmitCommand(ctx context.Context, commands interface
 	return commandID, nil
 }
 
+type SubmitResult struct {
+	UpdateID         string
+	CompletionOffset int64
+}
+
+func (l *LedgerController) SubmitCommandAndWait(ctx context.Context, commands interface{}, commandID string, disclosedContracts []*model.DisclosedContract, actAs []string, readAs []string) (*SubmitResult, error) {
+	partyID, err := l.GetPartyID()
+	if err != nil {
+		return nil, err
+	}
+
+	commandID = commandIDOrNew(commandID)
+
+	damlCommands, err := convertCommands(commands)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(actAs) == 0 {
+		actAs = []string{string(partyID)}
+	}
+	if readAs == nil {
+		readAs = []string{}
+	}
+
+	req := &damlModel.SubmitAndWaitRequest{
+		Commands: &damlModel.Commands{
+			UserID:    l.userID,
+			CommandID: commandID,
+			Commands:  damlCommands,
+			ActAs:     actAs,
+			ReadAs:    readAs,
+		},
+	}
+
+	resp, err := l.damlClient.CommandService.SubmitAndWait(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit and wait: %w", err)
+	}
+
+	l.logger.Info().
+		Str("commandID", commandID).
+		Str("updateID", resp.UpdateID).
+		Int64("completionOffset", resp.CompletionOffset).
+		Msg("Command submitted and executed successfully")
+
+	return &SubmitResult{
+		UpdateID:         resp.UpdateID,
+		CompletionOffset: resp.CompletionOffset,
+	}, nil
+}
+
 func (l *LedgerController) PrepareSignAndExecuteTransaction(ctx context.Context, commands interface{}, privateKey string, commandID string, disclosedContracts []*model.DisclosedContract) (string, error) {
-	prepared, err := l.PrepareSubmission(ctx, commands, commandID, disclosedContracts)
+	prepared, err := l.PrepareSubmission(ctx, commands, commandID, disclosedContracts, nil, nil)
 	if err != nil {
 		return "", err
 	}
@@ -505,17 +547,23 @@ func (l *LedgerController) AllocateExternalParty(ctx context.Context, signedHash
 	return &model.AllocateExternalPartyResponse{PartyID: partyID}, nil
 }
 
-func (l *LedgerController) CreateTransferPreapprovalCommand(ctx context.Context, providerParty model.PartyID, receiverParty model.PartyID, dsoParty model.PartyID) (*model.WrappedCommand, error) {
+func (l *LedgerController) CreateTransferPreapprovalCommand(
+	providerParty, receiverParty, dsoParty string,
+	validFrom, lastRenewedAt, expiresAt time.Time,
+) *model.WrappedCommand {
 	return &model.WrappedCommand{
 		CreateCommand: &model.CreateCommand{
-			TemplateID: "#splice-wallet:Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal",
+			TemplateID: "#splice-amulet:Splice.AmuletRules:TransferPreapproval",
 			CreateArguments: map[string]interface{}{
-				"provider":    providerParty,
-				"receiver":    receiverParty,
-				"expectedDso": dsoParty,
+				"provider":      types.PARTY(providerParty),
+				"receiver":      types.PARTY(receiverParty),
+				"dso":           types.PARTY(dsoParty),
+				"validFrom":     types.TIMESTAMP(validFrom),
+				"lastRenewedAt": types.TIMESTAMP(lastRenewedAt),
+				"expiresAt":     types.TIMESTAMP(expiresAt),
 			},
 		},
-	}, nil
+	}
 }
 
 func (l *LedgerController) LedgerEnd(ctx context.Context) (int64, error) {
@@ -898,6 +946,14 @@ func (l *LedgerController) UploadDar(ctx context.Context, darBytes []byte) error
 	return nil
 }
 
+func (l *LedgerController) ListKnownPackages(ctx context.Context) ([]*damlModel.PackageDetails, error) {
+	packages, err := l.damlClient.PackageMng.ListKnownPackages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list known packages: %w", err)
+	}
+	return packages, nil
+}
+
 func (l *LedgerController) IsPackageUploaded(ctx context.Context, packageID string) (bool, error) {
 	req := &damlModel.ListPackagesRequest{}
 	resp, err := l.damlClient.PackageService.ListPackages(ctx, req)
@@ -912,6 +968,32 @@ func (l *LedgerController) IsPackageUploaded(ctx context.Context, packageID stri
 	}
 
 	return false, nil
+}
+
+func commandIDOrNew(commandID string) string {
+	if commandID == "" {
+		return uuid.New().String()
+	}
+	return commandID
+}
+
+func convertCommands(commands interface{}) ([]*damlModel.Command, error) {
+	switch cmds := commands.(type) {
+	case []*model.WrappedCommand:
+		damlCommands := make([]*damlModel.Command, 0, len(cmds))
+		for _, cmd := range cmds {
+			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
+		}
+		return damlCommands, nil
+	case *model.WrappedCommand:
+		return []*damlModel.Command{convertWrappedCommand(cmds)}, nil
+	case []*damlModel.Command:
+		return cmds, nil
+	case *damlModel.Command:
+		return []*damlModel.Command{cmds}, nil
+	default:
+		return nil, fmt.Errorf("unsupported command type")
+	}
 }
 
 func convertWrappedCommand(cmd *model.WrappedCommand) *damlModel.Command {

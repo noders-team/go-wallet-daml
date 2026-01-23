@@ -9,7 +9,7 @@ replace github.com/digital-asset/dazl-client/v8 => github.com/noders-team/dazl-c
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
-	github.com/noders-team/go-daml v0.5.0
+	github.com/noders-team/go-daml v0.6.0
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/rs/zerolog v1.34.0
 	github.com/shopspring/decimal v1.4.0
