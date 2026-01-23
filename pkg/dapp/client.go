@@ -144,19 +144,9 @@ func (d *DappClient) PrepareReturn(ctx context.Context, req *model.JsPrepareSubm
 		return nil, model.ErrNoUserLedger
 	}
 
-	commands, err := d.convertToInternalCommands(req.Commands)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert commands: %w", err)
-	}
-
-	disclosed := d.convertDisclosedContracts(req.DisclosedContracts)
-
-	commandID := req.CommandID
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
-
-	prepared, err := d.sdk.UserLedger().PrepareSubmission(ctx, commands, commandID, disclosed, req.ActAs, req.ReadAs)
+	commandID := d.commandIDOrNew(req.CommandID)
+	prepared, err := d.sdk.UserLedger().PrepareSubmission(ctx, req.Commands,
+		commandID, req.DisclosedContracts, req.ActAs, req.ReadAs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare submission: %w", err)
 	}
@@ -172,19 +162,9 @@ func (d *DappClient) PrepareExecute(ctx context.Context, req *model.JsPrepareSub
 		return model.ErrNoUserLedger
 	}
 
-	commands, err := d.convertToInternalCommands(req.Commands)
-	if err != nil {
-		return fmt.Errorf("failed to convert commands: %w", err)
-	}
-
-	disclosed := d.convertDisclosedContracts(req.DisclosedContracts)
-
-	commandID := req.CommandID
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
-
-	_, err = d.sdk.UserLedger().PrepareSubmission(ctx, commands, commandID, disclosed, req.ActAs, req.ReadAs)
+	commandID := d.commandIDOrNew(req.CommandID)
+	_, err := d.sdk.UserLedger().PrepareSubmission(ctx, req.Commands, commandID,
+		req.DisclosedContracts, req.ActAs, req.ReadAs)
 	if err != nil {
 		return fmt.Errorf("failed to prepare submission: %w", err)
 	}
@@ -202,24 +182,16 @@ func (d *DappClient) PrepareExecuteAndWait(ctx context.Context, req *model.JsPre
 		return nil, model.ErrNoUserLedger
 	}
 
-	commandID := req.CommandID
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
+	commandID := d.commandIDOrNew(req.CommandID)
 
 	d.emitter.EmitTxChanged(&model.TxChangedPendingEvent{
 		Status:    "pending",
 		CommandID: commandID,
 	})
 
-	commands, err := d.convertToInternalCommands(req.Commands)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert commands: %w", err)
-	}
-
 	result, err := d.sdk.UserLedger().SubmitCommandAndWait(ctx,
-		commands, commandID,
-		d.convertDisclosedContracts(req.DisclosedContracts), req.ActAs, req.ReadAs)
+		req.Commands, commandID,
+		req.DisclosedContracts, req.ActAs, req.ReadAs)
 	if err != nil {
 		d.emitter.EmitTxChanged(&model.TxChangedFailedEvent{
 			Status:    "failed",
@@ -309,22 +281,21 @@ func (d *DappClient) RequestAccounts(ctx context.Context) ([]*model.Wallet, erro
 	return wallets, nil
 }
 
-func (d *DappClient) SubscribeAccountsChanged(ctx context.Context) (<-chan []*model.Wallet, error) {
+func (d *DappClient) SubscribeAccountsChanged(_ context.Context) (<-chan []*model.Wallet, error) {
 	ch := make(chan []*model.Wallet, 10)
 	d.emitter.AddAccountsListener(ch)
 	return ch, nil
 }
 
-func (d *DappClient) SubscribeTxChanged(ctx context.Context) (<-chan interface{}, error) {
+func (d *DappClient) SubscribeTxChanged(_ context.Context) (<-chan interface{}, error) {
 	ch := make(chan interface{}, 10)
 	d.emitter.AddTxListener(ch)
 	return ch, nil
 }
 
-func (d *DappClient) convertToInternalCommands(commands interface{}) (interface{}, error) {
-	return commands, nil
-}
-
-func (d *DappClient) convertDisclosedContracts(contracts []*model.DisclosedContract) []*model.DisclosedContract {
-	return contracts
+func (d *DappClient) commandIDOrNew(commandID string) string {
+	if commandID == "" {
+		return uuid.New().String()
+	}
+	return commandID
 }

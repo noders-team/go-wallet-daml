@@ -23,73 +23,75 @@ func (e *EventEmitter) EmitAccountsChanged(wallets []*model.Wallet) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	for _, ch := range e.accountsListeners {
-		select {
-		case ch <- wallets:
-		default:
-		}
-	}
+	emitListeners(e.accountsListeners, wallets)
 }
 
 func (e *EventEmitter) EmitTxChanged(event interface{}) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	for _, ch := range e.txListeners {
-		select {
-		case ch <- event:
-		default:
-		}
-	}
+	emitListeners(e.txListeners, event)
 }
 
 func (e *EventEmitter) AddAccountsListener(ch chan []*model.Wallet) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.accountsListeners = append(e.accountsListeners, ch)
+	addListener(&e.accountsListeners, ch)
 }
 
 func (e *EventEmitter) AddTxListener(ch chan interface{}) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.txListeners = append(e.txListeners, ch)
+	addListener(&e.txListeners, ch)
 }
 
 func (e *EventEmitter) RemoveAccountsListener(ch chan []*model.Wallet) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	for i, listener := range e.accountsListeners {
-		if listener == ch {
-			e.accountsListeners = append(e.accountsListeners[:i], e.accountsListeners[i+1:]...)
-			break
-		}
-	}
+	removeListener(&e.accountsListeners, ch)
 }
 
 func (e *EventEmitter) RemoveTxListener(ch chan interface{}) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	for i, listener := range e.txListeners {
-		if listener == ch {
-			e.txListeners = append(e.txListeners[:i], e.txListeners[i+1:]...)
-			break
-		}
-	}
+	removeListener(&e.txListeners, ch)
 }
 
 func (e *EventEmitter) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	for _, ch := range e.accountsListeners {
-		close(ch)
-	}
-	for _, ch := range e.txListeners {
-		close(ch)
-	}
+	closeListeners(e.accountsListeners)
+	closeListeners(e.txListeners)
 
 	e.accountsListeners = nil
 	e.txListeners = nil
+}
+
+func emitListeners[T any](listeners []chan T, value T) {
+	for _, ch := range listeners {
+		select {
+		case ch <- value:
+		default:
+		}
+	}
+}
+
+func addListener[T any](listeners *[]chan T, ch chan T) {
+	*listeners = append(*listeners, ch)
+}
+
+func removeListener[T any](listeners *[]chan T, ch chan T) {
+	for i, listener := range *listeners {
+		if listener == ch {
+			*listeners = append((*listeners)[:i], (*listeners)[i+1:]...)
+			break
+		}
+	}
+}
+
+func closeListeners[T any](listeners []chan T) {
+	for _, ch := range listeners {
+		close(ch)
+	}
 }

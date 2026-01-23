@@ -121,28 +121,10 @@ func (s *DappClientTestSuite) TestPrepareReturn() {
 	dsoPartyID := testutil.GetDsoPartyID()
 	synchronizerID := testutil.GetSynchronizerID()
 
-	receiverPartyID, err := allocatePartyWithCrypto(s.ctx, cl, "receiver")
+	receiverPartyID, err := s.allocatePartyWithRights(s.ctx, cl, "receiver")
 	require.NoError(s.T(), err)
 
-	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
-		{Type: damlModel.CanActAs{Party: receiverPartyID}},
-		{Type: damlModel.CanReadAs{Party: receiverPartyID}},
-	})
-	require.NoError(s.T(), err)
-
-	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
-	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
-
-	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID, mintAmount, "", string(dsoPartyID))
-	require.NoError(s.T(), err)
-
-	time.Sleep(5 * time.Second)
-
-	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
-	require.NoError(s.T(), err)
-
-	holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	holdings, err := s.mintAndAwaitHoldings(s.ctx, dsoPartyID, synchronizerID, 2, 5*time.Second)
 	require.NoError(s.T(), err)
 	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
 
@@ -177,28 +159,10 @@ func (s *DappClientTestSuite) TestPrepareExecute() {
 	dsoPartyID := testutil.GetDsoPartyID()
 	synchronizerID := testutil.GetSynchronizerID()
 
-	receiverPartyID, err := allocatePartyWithCrypto(s.ctx, cl, "receiver")
+	receiverPartyID, err := s.allocatePartyWithRights(s.ctx, cl, "receiver")
 	require.NoError(s.T(), err)
 
-	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
-		{Type: damlModel.CanActAs{Party: receiverPartyID}},
-		{Type: damlModel.CanReadAs{Party: receiverPartyID}},
-	})
-	require.NoError(s.T(), err)
-
-	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
-	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
-
-	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID, mintAmount, "", string(dsoPartyID))
-	require.NoError(s.T(), err)
-
-	time.Sleep(5 * time.Second)
-
-	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
-	require.NoError(s.T(), err)
-
-	holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	holdings, err := s.mintAndAwaitHoldings(s.ctx, dsoPartyID, synchronizerID, 2, 5*time.Second)
 	require.NoError(s.T(), err)
 	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
 
@@ -246,30 +210,10 @@ func (s *DappClientTestSuite) TestPrepareExecuteAndWait() {
 	dsoPartyID := testutil.GetDsoPartyID()
 	synchronizerID := testutil.GetSynchronizerID()
 
-	receiverPartyID, err := allocatePartyWithCrypto(s.ctx, cl, "receiver")
+	receiverPartyID, err := s.allocatePartyWithRights(s.ctx, cl, "receiver")
 	require.NoError(s.T(), err)
 
-	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
-		{Type: damlModel.CanActAs{Party: receiverPartyID}},
-		{Type: damlModel.CanReadAs{Party: receiverPartyID}},
-	})
-	require.NoError(s.T(), err)
-
-	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
-	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
-
-	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(
-		s.ctx, dsoPartyID,
-		mintAmount, "", string(dsoPartyID))
-	require.NoError(s.T(), err)
-
-	time.Sleep(5 * time.Second)
-
-	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
-	require.NoError(s.T(), err)
-
-	holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	holdings, err := s.mintAndAwaitHoldings(s.ctx, dsoPartyID, synchronizerID, 2, 5*time.Second)
 	require.NoError(s.T(), err)
 	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
 
@@ -306,33 +250,10 @@ func (s *DappClientTestSuite) TestPrepareReturnWithExternalParty() {
 	dsoPartyID := testutil.GetDsoPartyID()
 	synchronizerID := testutil.GetSynchronizerID()
 
-	externalObserverID, err := allocateExternalPartyWithCrypto(s.ctx, cl, "ext-observer")
+	externalObserverID, err := s.allocateExternalPartyWithRead(s.ctx, cl, "ext-observer")
 	require.NoError(s.T(), err)
 
-	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
-		{Type: damlModel.CanReadAs{Party: externalObserverID}},
-	})
-	require.NoError(s.T(), err)
-
-	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
-	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
-
-	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID,
-		mintAmount, "", string(dsoPartyID))
-	require.NoError(s.T(), err)
-
-	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
-	require.NoError(s.T(), err)
-
-	var holdings []*controller.HoldingUTXO
-	for i := 0; i < 6; i++ {
-		time.Sleep(3 * time.Second)
-		holdings, err = s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
-		if err == nil && len(holdings) > 0 {
-			break
-		}
-	}
+	holdings, err := s.mintAndAwaitHoldings(s.ctx, dsoPartyID, synchronizerID, 6, 3*time.Second)
 	require.NoError(s.T(), err)
 	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
 
@@ -368,27 +289,10 @@ func (s *DappClientTestSuite) TestPrepareExecuteWithExternalParty() {
 	dsoPartyID := testutil.GetDsoPartyID()
 	synchronizerID := testutil.GetSynchronizerID()
 
-	receiverPartyID, err := allocatePartyWithCrypto(s.ctx, cl, "receiver")
+	receiverPartyID, err := s.allocatePartyWithRights(s.ctx, cl, "receiver")
 	require.NoError(s.T(), err)
 
-	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
-		{Type: damlModel.CanActAs{Party: receiverPartyID}},
-		{Type: damlModel.CanReadAs{Party: receiverPartyID}},
-	})
-	require.NoError(s.T(), err)
-
-	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
-	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
-
-	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx,
-		dsoPartyID, mintAmount, "", string(dsoPartyID))
-	require.NoError(s.T(), err)
-
-	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
-	require.NoError(s.T(), err)
-
-	holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	holdings, err := s.mintAndAwaitHoldings(s.ctx, dsoPartyID, synchronizerID, 2, 5*time.Second)
 	require.NoError(s.T(), err)
 	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
 
@@ -481,26 +385,10 @@ func (s *DappClientTestSuite) TestPrepareExecuteAndWaitWithExternalParty() {
 	dsoPartyID := testutil.GetDsoPartyID()
 	synchronizerID := testutil.GetSynchronizerID()
 
-	externalObserverID, err := allocateExternalPartyWithCrypto(s.ctx, cl, "ext-observer")
+	externalObserverID, err := s.allocateExternalPartyWithRead(s.ctx, cl, "ext-observer")
 	require.NoError(s.T(), err)
 
-	_, err = cl.UserMng.GrantUserRights(s.ctx, "app-provider", "", []*damlModel.Right{
-		{Type: damlModel.CanReadAs{Party: externalObserverID}},
-	})
-	require.NoError(s.T(), err)
-
-	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
-	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
-
-	mintAmount := decimal.NewFromFloat(100.0)
-	_, err = s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(s.ctx, dsoPartyID,
-		mintAmount, "", string(dsoPartyID))
-	require.NoError(s.T(), err)
-
-	err = s.walletSDK.SetPartyID(s.ctx, dsoPartyID, &synchronizerID)
-	require.NoError(s.T(), err)
-
-	holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(s.ctx, false, 10)
+	holdings, err := s.mintAndAwaitHoldings(s.ctx, dsoPartyID, synchronizerID, 2, 5*time.Second)
 	require.NoError(s.T(), err)
 	require.NotEmpty(s.T(), holdings, "should have holdings after mint")
 
@@ -531,6 +419,74 @@ func (s *DappClientTestSuite) TestPrepareExecuteAndWaitWithExternalParty() {
 	require.NotEmpty(s.T(), result.CommandID, "command ID should not be empty")
 	require.NotNil(s.T(), result.Payload)
 	require.NotEmpty(s.T(), result.Payload.UpdateID, "update ID should not be empty")
+}
+
+func (s *DappClientTestSuite) allocatePartyWithRights(ctx context.Context, cl *client.DamlBindingClient, displayName string) (string, error) {
+	partyID, err := allocatePartyWithCrypto(ctx, cl, displayName)
+	if err != nil {
+		return "", err
+	}
+	err = s.grantUserRights(ctx, cl, []*damlModel.Right{
+		{Type: damlModel.CanActAs{Party: partyID}},
+		{Type: damlModel.CanReadAs{Party: partyID}},
+	})
+	if err != nil {
+		return "", err
+	}
+	return partyID, nil
+}
+
+func (s *DappClientTestSuite) allocateExternalPartyWithRead(ctx context.Context, cl *client.DamlBindingClient, displayName string) (string, error) {
+	partyID, err := allocateExternalPartyWithCrypto(ctx, cl, displayName)
+	if err != nil {
+		return "", err
+	}
+	err = s.grantUserRights(ctx, cl, []*damlModel.Right{
+		{Type: damlModel.CanReadAs{Party: partyID}},
+	})
+	if err != nil {
+		return "", err
+	}
+	return partyID, nil
+}
+
+func (s *DappClientTestSuite) grantUserRights(ctx context.Context, cl *client.DamlBindingClient, rights []*damlModel.Right) error {
+	_, err := cl.UserMng.GrantUserRights(ctx, "app-provider", "", rights)
+	return err
+}
+
+func (s *DappClientTestSuite) mintAndAwaitHoldings(ctx context.Context, dsoPartyID, synchronizerID model.PartyID, retries int, delay time.Duration) ([]*controller.HoldingUTXO, error) {
+	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
+	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
+
+	mintAmount := decimal.NewFromFloat(100.0)
+	_, err := s.walletSDK.TokenStandard().CreateAndSubmitTapInternal(ctx, dsoPartyID, mintAmount, "", string(dsoPartyID))
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.walletSDK.SetPartyID(ctx, dsoPartyID, &synchronizerID)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for i := 0; i < retries; i++ {
+		holdings, err := s.walletSDK.TokenStandard().ListHoldingUtxos(ctx, false, 10)
+		if err == nil && len(holdings) > 0 {
+			return holdings, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		if i < retries-1 {
+			time.Sleep(delay)
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no holdings after mint")
 }
 
 func allocatePartyWithCrypto(ctx context.Context, cl *client.DamlBindingClient, displayName string) (string, error) {
