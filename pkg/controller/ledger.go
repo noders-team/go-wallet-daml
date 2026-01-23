@@ -199,24 +199,11 @@ func (l *LedgerController) PrepareSubmission(ctx context.Context, commands inter
 		return nil, err
 	}
 
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
+	commandID = commandIDOrNew(commandID)
 
-	var damlCommands []*damlModel.Command
-	switch cmds := commands.(type) {
-	case []*model.WrappedCommand:
-		for _, cmd := range cmds {
-			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
-		}
-	case *model.WrappedCommand:
-		damlCommands = append(damlCommands, convertWrappedCommand(cmds))
-	case []*damlModel.Command:
-		damlCommands = cmds
-	case *damlModel.Command:
-		damlCommands = []*damlModel.Command{cmds}
-	default:
-		return nil, fmt.Errorf("unsupported command type")
+	damlCommands, err := convertCommands(commands)
+	if err != nil {
+		return nil, err
 	}
 
 	var damlDisclosed []*damlModel.DisclosedContract
@@ -320,24 +307,11 @@ func (l *LedgerController) SubmitCommand(ctx context.Context, commands interface
 		return "", err
 	}
 
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
+	commandID = commandIDOrNew(commandID)
 
-	var damlCommands []*damlModel.Command
-	switch cmds := commands.(type) {
-	case []*model.WrappedCommand:
-		for _, cmd := range cmds {
-			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
-		}
-	case *model.WrappedCommand:
-		damlCommands = append(damlCommands, convertWrappedCommand(cmds))
-	case []*damlModel.Command:
-		damlCommands = cmds
-	case *damlModel.Command:
-		damlCommands = []*damlModel.Command{cmds}
-	default:
-		return "", fmt.Errorf("unsupported command type")
+	damlCommands, err := convertCommands(commands)
+	if err != nil {
+		return "", err
 	}
 
 	req := &damlModel.SubmitRequest{
@@ -374,24 +348,11 @@ func (l *LedgerController) SubmitCommandAndWait(ctx context.Context, commands in
 		return nil, err
 	}
 
-	if commandID == "" {
-		commandID = uuid.New().String()
-	}
+	commandID = commandIDOrNew(commandID)
 
-	var damlCommands []*damlModel.Command
-	switch cmds := commands.(type) {
-	case []*model.WrappedCommand:
-		for _, cmd := range cmds {
-			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
-		}
-	case *model.WrappedCommand:
-		damlCommands = append(damlCommands, convertWrappedCommand(cmds))
-	case []*damlModel.Command:
-		damlCommands = cmds
-	case *damlModel.Command:
-		damlCommands = []*damlModel.Command{cmds}
-	default:
-		return nil, fmt.Errorf("unsupported command type")
+	damlCommands, err := convertCommands(commands)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(actAs) == 0 {
@@ -1007,6 +968,32 @@ func (l *LedgerController) IsPackageUploaded(ctx context.Context, packageID stri
 	}
 
 	return false, nil
+}
+
+func commandIDOrNew(commandID string) string {
+	if commandID == "" {
+		return uuid.New().String()
+	}
+	return commandID
+}
+
+func convertCommands(commands interface{}) ([]*damlModel.Command, error) {
+	switch cmds := commands.(type) {
+	case []*model.WrappedCommand:
+		damlCommands := make([]*damlModel.Command, 0, len(cmds))
+		for _, cmd := range cmds {
+			damlCommands = append(damlCommands, convertWrappedCommand(cmd))
+		}
+		return damlCommands, nil
+	case *model.WrappedCommand:
+		return []*damlModel.Command{convertWrappedCommand(cmds)}, nil
+	case []*damlModel.Command:
+		return cmds, nil
+	case *damlModel.Command:
+		return []*damlModel.Command{cmds}, nil
+	default:
+		return nil, fmt.Errorf("unsupported command type")
+	}
 }
 
 func convertWrappedCommand(cmd *model.WrappedCommand) *damlModel.Command {
