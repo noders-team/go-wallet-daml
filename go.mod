@@ -1,6 +1,6 @@
 module github.com/noders-team/go-wallet-daml
 
-go 1.23.0
+go 1.24.2
 
 toolchain go1.24.10
 
@@ -9,11 +9,12 @@ replace github.com/digital-asset/dazl-client/v8 => github.com/noders-team/dazl-c
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
-	github.com/noders-team/go-daml v0.6.0
+	github.com/noders-team/go-daml v0.6.1
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/rs/zerolog v1.34.0
 	github.com/shopspring/decimal v1.4.0
 	github.com/stretchr/testify v1.11.1
+	google.golang.org/grpc v1.73.0
 )
 
 require (
@@ -50,7 +51,6 @@ require (
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 // indirect
-	google.golang.org/grpc v1.73.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

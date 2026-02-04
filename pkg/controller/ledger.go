@@ -17,6 +17,7 @@ import (
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
 )
 
 type LedgerController struct {
@@ -40,6 +41,7 @@ type LedgerControllerBuilder struct {
 	logger         *zerolog.Logger
 	tlsConfig      *client.TLSConfig
 	connectOnBuild bool
+	dialOptions    []grpc.DialOption
 }
 
 func NewLedgerControllerBuilder() *LedgerControllerBuilder {
@@ -93,6 +95,11 @@ func (b *LedgerControllerBuilder) WithConnectOnBuild(connect bool) *LedgerContro
 	return b
 }
 
+func (b *LedgerControllerBuilder) WithDialOptions(opts ...grpc.DialOption) *LedgerControllerBuilder {
+	b.dialOptions = append(b.dialOptions, opts...)
+	return b
+}
+
 func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController, error) {
 	var logger zerolog.Logger
 	if b.logger != nil {
@@ -106,8 +113,9 @@ func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController,
 	}
 
 	damlConfig := &client.Config{
-		Address: b.grpcAddress,
-		TLS:     b.tlsConfig,
+		Address:         b.grpcAddress,
+		TLS:             b.tlsConfig,
+		GRPCDialOptions: b.dialOptions,
 	}
 	if b.token != nil {
 		damlConfig.Auth = &client.AuthConfig{Token: *b.token}
