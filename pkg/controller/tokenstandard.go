@@ -39,10 +39,13 @@ type TokenStandardController struct {
 	partyID                    atomic.Value
 	synchronizerID             atomic.Value
 	transferFactoryRegistryUrl atomic.Value
+	amuletRulesContractID      atomic.Value
+	amuletRulesTemplateID      atomic.Value
+	openMiningRoundContractID  atomic.Value
 	logger                     zerolog.Logger
 }
 
-func NewTokenStandardController(userID string, grpcAddress string, provider *auth.AuthTokenProvider, isAdmin bool) (*TokenStandardController, error) {
+func NewTokenStandardController(userID string, grpcAddress string, provider *auth.AuthTokenProvider) (*TokenStandardController, error) {
 	logger := log.Logger.With().
 		Str("component", "token-standard-controller").
 		Str("userID", userID).
@@ -112,6 +115,42 @@ func (t *TokenStandardController) GetTransferFactoryRegistryUrl() (string, error
 	return v.(string), nil
 }
 
+func (t *TokenStandardController) SetAmuletRulesContractID(id string) {
+	t.amuletRulesContractID.Store(id)
+}
+
+func (t *TokenStandardController) GetAmuletRulesContractID() string {
+	v := t.amuletRulesContractID.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
+}
+
+func (t *TokenStandardController) SetAmuletRulesTemplateID(id string) {
+	t.amuletRulesTemplateID.Store(id)
+}
+
+func (t *TokenStandardController) GetAmuletRulesTemplateID() string {
+	v := t.amuletRulesTemplateID.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
+}
+
+func (t *TokenStandardController) SetOpenMiningRoundContractID(id string) {
+	t.openMiningRoundContractID.Store(id)
+}
+
+func (t *TokenStandardController) GetOpenMiningRoundContractID() string {
+	v := t.openMiningRoundContractID.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
+}
+
 func (t *TokenStandardController) Transfer(ctx context.Context, receiver model.PartyID, amount decimal.Decimal) (*model.TransferResponse, error) {
 	partyID, err := t.GetPartyID()
 	if err != nil {
@@ -160,7 +199,8 @@ func (t *TokenStandardController) Transfer(ctx context.Context, receiver model.P
 	}, nil
 }
 
-func (t *TokenStandardController) Lock(ctx context.Context, amount decimal.Decimal, expiresAt time.Time) (*model.LockResponse, error) {
+func (t *TokenStandardController) Lock(ctx context.Context,
+	amount decimal.Decimal, expiresAt time.Time) (*model.LockResponse, error) {
 	_, err := t.GetPartyID()
 	if err != nil {
 		return nil, err
@@ -180,6 +220,7 @@ func (t *TokenStandardController) Lock(ctx context.Context, amount decimal.Decim
 	}, nil
 }
 
+// TODO????
 func (t *TokenStandardController) Unlock(ctx context.Context, lockContractID string) error {
 	_, err := t.GetPartyID()
 	if err != nil {
@@ -193,6 +234,7 @@ func (t *TokenStandardController) Unlock(ctx context.Context, lockContractID str
 	return nil
 }
 
+// TODO????
 func (t *TokenStandardController) Burn(ctx context.Context, amount decimal.Decimal) error {
 	_, err := t.GetPartyID()
 	if err != nil {
@@ -243,7 +285,7 @@ func (t *TokenStandardController) GetBalance(ctx context.Context) (decimal.Decim
 				t.logger.Debug().
 					Str("partyID", string(partyID)).
 					Str("balance", balance.String()).
-					Msg("Balance retrieved")
+					Msg("balance retrieved")
 				return balance, nil
 			}
 			if entry, ok := resp.ContractEntry.(*damlModel.ActiveContractEntry); ok {
@@ -320,17 +362,7 @@ func (t *TokenStandardController) ListContractsByInterface(ctx context.Context, 
 	}
 }
 
-type HoldingUTXO struct {
-	ContractID       string
-	Amount           decimal.Decimal
-	InstrumentID     string
-	InstrumentAdmin  string
-	Owner            string
-	Lock             map[string]interface{}
-	CreatedEventBlob []byte
-}
-
-func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeLocked bool, limit int) ([]*HoldingUTXO, error) {
+func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeLocked bool, limit int) ([]*model.HoldingUTXO, error) {
 	partyID, err := t.GetPartyID()
 	if err != nil {
 		return nil, err
@@ -376,7 +408,7 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 
 	stream, errChan := t.damlClient.UpdateService.GetUpdates(ctx, req)
 
-	activeContracts := make(map[string]*HoldingUTXO)
+	activeContracts := make(map[string]*model.HoldingUTXO)
 	timeout := time.After(2 * time.Second)
 	updateCount := 0
 
@@ -388,7 +420,7 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 					Int("totalUpdates", updateCount).
 					Int("activeContracts", len(activeContracts)).
 					Msg("GetUpdates stream closed")
-				result := make([]*HoldingUTXO, 0, len(activeContracts))
+				result := make([]*model.HoldingUTXO, 0, len(activeContracts))
 				for _, utxo := range activeContracts {
 					result = append(result, utxo)
 				}
@@ -412,7 +444,7 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 							Str("templateID", contract.TemplateID).
 							Msg("Found created Amulet contract")
 
-						utxo := &HoldingUTXO{
+						utxo := &model.HoldingUTXO{
 							ContractID:       contract.ContractID,
 							CreatedEventBlob: contract.CreatedEventBlob,
 							InstrumentID:     "Amulet",
@@ -503,7 +535,7 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 				Int("activeContracts", len(activeContracts)).
 				Int("totalUpdates", updateCount).
 				Msg("Timeout reached, returning active contracts")
-			result := make([]*HoldingUTXO, 0, len(activeContracts))
+			result := make([]*model.HoldingUTXO, 0, len(activeContracts))
 			for _, utxo := range activeContracts {
 				result = append(result, utxo)
 			}
@@ -517,29 +549,20 @@ func (t *TokenStandardController) ListHoldingUtxos(ctx context.Context, includeL
 	}
 }
 
-type TransferInstruction struct {
-	ContractID       string
-	Sender           string
-	Receiver         string
-	Amount           decimal.Decimal
-	Memo             string
-	CreatedEventBlob []byte
-}
-
-func (t *TokenStandardController) FetchPendingTransferInstructionView(ctx context.Context) ([]*TransferInstruction, error) {
+func (t *TokenStandardController) FetchPendingTransferInstructionView(ctx context.Context) ([]*model.TransferInstruction, error) {
 	contracts, err := t.ListContractsByInterface(ctx, "Splice.TransferInstruction:TransferInstruction")
 	if err != nil {
 		return nil, err
 	}
 
-	var instructions []*TransferInstruction
+	var instructions []*model.TransferInstruction
 	for _, contract := range contracts {
 		args, ok := contract.CreateArguments.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
-		instruction := &TransferInstruction{
+		instruction := &model.TransferInstruction{
 			ContractID:       contract.ContractID,
 			CreatedEventBlob: contract.CreatedEventBlob,
 		}
@@ -615,9 +638,12 @@ func (t *TokenStandardController) CreateTransfer(
 		return nil, fmt.Errorf("amuletRulesContractID is empty")
 	}
 
-	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID") // TODO fix it
+	openMiningRoundContractID := t.GetOpenMiningRoundContractID()
 	if openMiningRoundContractID == "" {
-		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set")
+		openMiningRoundContractID = os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	}
+	if openMiningRoundContractID == "" {
+		return nil, fmt.Errorf("openMiningRoundContractID not set")
 	}
 
 	var utxosToUse []string
@@ -722,9 +748,12 @@ func (t *TokenStandardController) CreateTap(
 		return nil, fmt.Errorf("failed to find AmuletRules contract: %w", err)
 	}
 
-	openMiningRoundContractID := os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID") // TODO fix it
+	openMiningRoundContractID := t.GetOpenMiningRoundContractID()
 	if openMiningRoundContractID == "" {
-		return nil, fmt.Errorf("OPEN_MINING_ROUND_CONTRACT_ID not set - OpenMiningRound needs to be bootstrapped first")
+		openMiningRoundContractID = os.Getenv("OPEN_MINING_ROUND_CONTRACT_ID")
+	}
+	if openMiningRoundContractID == "" {
+		return nil, fmt.Errorf("openMiningRoundContractID not set - OpenMiningRound needs to be bootstrapped first")
 	}
 
 	tapCmd := &damlModel.Command{
@@ -845,7 +874,8 @@ func (t *TokenStandardController) ListInstruments(ctx context.Context, pageSize 
 	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
 }
 
-func (t *TokenStandardController) GetTransactionById(ctx context.Context, updateId string) (*damlModel.GetUpdatesResponse, error) {
+func (t *TokenStandardController) GetTransactionById(ctx context.Context,
+	updateId string) (*damlModel.GetUpdatesResponse, error) {
 	partyID, err := t.GetPartyID()
 	if err != nil {
 		return nil, err
@@ -855,7 +885,8 @@ func (t *TokenStandardController) GetTransactionById(ctx context.Context, update
 	return nil, fmt.Errorf("getTransactionById not fully implemented")
 }
 
-func (t *TokenStandardController) ListHoldingUtxo(ctx context.Context, contractId string) (*HoldingUTXO, error) {
+func (t *TokenStandardController) ListHoldingUtxo(ctx context.Context,
+	contractId string) (*model.HoldingUTXO, error) {
 	utxos, err := t.ListHoldingUtxos(ctx, true, 0)
 	if err != nil {
 		return nil, err
@@ -870,12 +901,9 @@ func (t *TokenStandardController) ListHoldingUtxo(ctx context.Context, contractI
 	return nil, fmt.Errorf("holding with contractId %s not found", contractId)
 }
 
-type MergeUtxosResult struct {
-	Commands           []*damlModel.Command
-	DisclosedContracts []*damlModel.DisclosedContract
-}
-
-func (t *TokenStandardController) MergeHoldingUtxos(ctx context.Context, nodeLimit int, partyID model.PartyID, inputUtxos []*HoldingUTXO) (*MergeUtxosResult, error) {
+func (t *TokenStandardController) MergeHoldingUtxos(ctx context.Context,
+	nodeLimit int, partyID model.PartyID,
+	inputUtxos []*model.HoldingUTXO) (*model.MergeUtxosResult, error) {
 	if partyID == "" {
 		var err error
 		partyID, err = t.GetPartyID()
@@ -884,7 +912,7 @@ func (t *TokenStandardController) MergeHoldingUtxos(ctx context.Context, nodeLim
 		}
 	}
 
-	var utxos []*HoldingUTXO
+	var utxos []*model.HoldingUTXO
 	if len(inputUtxos) > 0 {
 		utxos = inputUtxos
 	} else {
@@ -895,7 +923,7 @@ func (t *TokenStandardController) MergeHoldingUtxos(ctx context.Context, nodeLim
 		}
 	}
 
-	utxosByInstrument := make(map[string][]*HoldingUTXO)
+	utxosByInstrument := make(map[string][]*model.HoldingUTXO)
 	for _, utxo := range utxos {
 		key := utxo.InstrumentID + "::" + utxo.InstrumentAdmin
 		utxosByInstrument[key] = append(utxosByInstrument[key], utxo)
@@ -950,33 +978,26 @@ func (t *TokenStandardController) MergeHoldingUtxos(ctx context.Context, nodeLim
 		disclosed = append(disclosed, dc)
 	}
 
-	return &MergeUtxosResult{
+	return &model.MergeUtxosResult{
 		Commands:           allCommands,
 		DisclosedContracts: disclosed,
 	}, nil
 }
 
-type AllocationInstruction struct {
-	ContractID       string
-	Provider         string
-	Specification    map[string]interface{}
-	CreatedEventBlob []byte
-}
-
-func (t *TokenStandardController) FetchPendingAllocationInstructionView(ctx context.Context) ([]*AllocationInstruction, error) {
+func (t *TokenStandardController) FetchPendingAllocationInstructionView(ctx context.Context) ([]*model.AllocationInstruction, error) {
 	contracts, err := t.ListContractsByInterface(ctx, "Splice.Allocation:AllocationInstruction")
 	if err != nil {
 		return nil, err
 	}
 
-	var instructions []*AllocationInstruction
+	var instructions []*model.AllocationInstruction
 	for _, contract := range contracts {
 		args, ok := contract.CreateArguments.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
-		instruction := &AllocationInstruction{
+		instruction := &model.AllocationInstruction{
 			ContractID:       contract.ContractID,
 			CreatedEventBlob: contract.CreatedEventBlob,
 		}
@@ -994,27 +1015,20 @@ func (t *TokenStandardController) FetchPendingAllocationInstructionView(ctx cont
 	return instructions, nil
 }
 
-type AllocationRequest struct {
-	ContractID       string
-	Requester        string
-	Specification    map[string]interface{}
-	CreatedEventBlob []byte
-}
-
-func (t *TokenStandardController) FetchPendingAllocationRequestView(ctx context.Context) ([]*AllocationRequest, error) {
+func (t *TokenStandardController) FetchPendingAllocationRequestView(ctx context.Context) ([]*model.AllocationRequest, error) {
 	contracts, err := t.ListContractsByInterface(ctx, "Splice.Allocation:AllocationRequest")
 	if err != nil {
 		return nil, err
 	}
 
-	var requests []*AllocationRequest
+	var requests []*model.AllocationRequest
 	for _, contract := range contracts {
 		args, ok := contract.CreateArguments.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
-		request := &AllocationRequest{
+		request := &model.AllocationRequest{
 			ContractID:       contract.ContractID,
 			CreatedEventBlob: contract.CreatedEventBlob,
 		}
@@ -1032,28 +1046,20 @@ func (t *TokenStandardController) FetchPendingAllocationRequestView(ctx context.
 	return requests, nil
 }
 
-type Allocation struct {
-	ContractID       string
-	Provider         string
-	Receiver         string
-	Amount           decimal.Decimal
-	CreatedEventBlob []byte
-}
-
-func (t *TokenStandardController) FetchPendingAllocationView(ctx context.Context) ([]*Allocation, error) {
+func (t *TokenStandardController) FetchPendingAllocationView(ctx context.Context) ([]*model.Allocation, error) {
 	contracts, err := t.ListContractsByInterface(ctx, "Splice.Allocation:Allocation")
 	if err != nil {
 		return nil, err
 	}
 
-	var allocations []*Allocation
+	var allocations []*model.Allocation
 	for _, contract := range contracts {
 		args, ok := contract.CreateArguments.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
-		allocation := &Allocation{
+		allocation := &model.Allocation{
 			ContractID:       contract.ContractID,
 			CreatedEventBlob: contract.CreatedEventBlob,
 		}
@@ -1102,24 +1108,8 @@ func (t *TokenStandardController) CreateAllocationInstruction(
 	}, nil
 }
 
-func (t *TokenStandardController) GetCreateAllocationInstructionContext(
-	ctx context.Context,
-	allocationSpecification map[string]interface{},
-	expectedAdmin string,
-	inputUtxos []string,
-	requestedAt string,
-) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Msg("Getting allocation instruction context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
-}
-
 func (t *TokenStandardController) ExerciseAllocationChoice(
-	ctx context.Context,
+	_ context.Context,
 	allocationCid string,
 	choice string,
 ) (*CreateTransferResult, error) {
@@ -1136,36 +1126,6 @@ func (t *TokenStandardController) ExerciseAllocationChoice(
 		Command:            cmd,
 		DisclosedContracts: []*damlModel.DisclosedContract{},
 	}, nil
-}
-
-func (t *TokenStandardController) GetAllocationExecuteTransferChoiceContext(ctx context.Context, allocationCid string) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Str("allocationCid", allocationCid).Msg("Getting allocation execute transfer context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
-}
-
-func (t *TokenStandardController) GetAllocationWithdrawChoiceContext(ctx context.Context, allocationCid string) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Str("allocationCid", allocationCid).Msg("Getting allocation withdraw context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
-}
-
-func (t *TokenStandardController) GetAllocationCancelChoiceContext(ctx context.Context, allocationCid string) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Str("allocationCid", allocationCid).Msg("Getting allocation cancel context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
 }
 
 func (t *TokenStandardController) ExerciseAllocationInstructionChoice(
@@ -1209,25 +1169,6 @@ func (t *TokenStandardController) ExerciseAllocationRequestChoice(
 		Command:            cmd,
 		DisclosedContracts: []*damlModel.DisclosedContract{},
 	}, nil
-}
-
-func (t *TokenStandardController) GetCreateTransferContext(
-	ctx context.Context,
-	sender model.PartyID,
-	receiver model.PartyID,
-	amount decimal.Decimal,
-	instrumentID string,
-	instrumentAdmin string,
-	inputUtxos []string,
-	memo string,
-) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Msg("Getting create transfer context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
 }
 
 func (t *TokenStandardController) CreateTransferUsingDelegateProxy(
@@ -1294,36 +1235,6 @@ func (t *TokenStandardController) ExerciseTransferInstructionChoiceWithDelegate(
 		Command:            cmd,
 		DisclosedContracts: []*damlModel.DisclosedContract{},
 	}, nil
-}
-
-func (t *TokenStandardController) GetAcceptTransferInstructionContext(ctx context.Context, transferInstructionCid string) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Str("transferInstructionCid", transferInstructionCid).Msg("Getting accept transfer instruction context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
-}
-
-func (t *TokenStandardController) GetRejectTransferInstructionContext(ctx context.Context, transferInstructionCid string) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Str("transferInstructionCid", transferInstructionCid).Msg("Getting reject transfer instruction context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
-}
-
-func (t *TokenStandardController) GetWithdrawTransferInstructionContext(ctx context.Context, transferInstructionCid string) (map[string]interface{}, error) {
-	registryUrl, err := t.GetTransferFactoryRegistryUrl()
-	if err != nil {
-		return nil, err
-	}
-
-	t.logger.Info().Str("registryUrl", registryUrl).Str("transferInstructionCid", transferInstructionCid).Msg("Getting withdraw transfer instruction context")
-	return nil, fmt.Errorf("registry API call not implemented - requires HTTP client")
 }
 
 type TransferPreapproval struct {
@@ -1756,23 +1667,22 @@ func (t *TokenStandardController) CreateBatchMergeUtility(ctx context.Context) (
 }
 
 func (t *TokenStandardController) findAmuletRulesContract(ctx context.Context) (string, string, error) {
-	testUtilTemplateID := ""
-	testUtilContractID := ""
+	templateID := t.GetAmuletRulesTemplateID()
+	contractID := t.GetAmuletRulesContractID()
 
-	type testUtilGetter interface {
-		GetAmuletRulesTemplateID() string
-		GetAmuletRulesContractID() string
+	if templateID == "" {
+		templateID = os.Getenv("AMULET_RULES_TEMPLATE_ID")
+	}
+	if contractID == "" {
+		contractID = os.Getenv("AMULET_RULES_CONTRACT_ID")
 	}
 
-	testUtilTemplateID = os.Getenv("AMULET_RULES_TEMPLATE_ID")
-	testUtilContractID = os.Getenv("AMULET_RULES_CONTRACT_ID")
-
-	if testUtilTemplateID != "" && testUtilContractID != "" {
+	if templateID != "" && contractID != "" {
 		t.logger.Info().
-			Str("templateID", testUtilTemplateID).
-			Str("contractID", testUtilContractID).
-			Msg("Using AmuletRules contract from environment variables")
-		return testUtilTemplateID, testUtilContractID, nil
+			Str("templateID", templateID).
+			Str("contractID", contractID).
+			Msg("Using AmuletRules contract from configured values")
+		return templateID, contractID, nil
 	}
 
 	packages, err := t.damlClient.PackageMng.ListKnownPackages(ctx)
