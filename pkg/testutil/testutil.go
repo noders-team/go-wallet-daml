@@ -15,9 +15,9 @@ import (
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-daml/pkg/types"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
+	proxyClient "github.com/noders-team/go-wallet-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
-	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
 	"github.com/rs/zerolog/log"
@@ -171,7 +171,7 @@ func Setup(ctx context.Context) error {
 		tokenStdCtrl.SetPartyID(testPartyID)
 		tokenStdCtrl.SetSynchronizerID(synchronizerID)
 
-		scanProxy := wrapper.NewScanProxyClient(scanProxyBaseURL, authProvider, false)
+		scanProxy := proxyClient.NewScanProxyClient(scanProxyBaseURL, authProvider, false)
 		validatorCtrl, err = controller.NewValidatorController(testUserID, scanProxy, damlClient)
 		if err != nil {
 			setupErr = fmt.Errorf("failed to create validator controller: %w", err)

@@ -8,22 +8,22 @@ import (
 
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
+	proxyClient "github.com/noders-team/go-wallet-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
-	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
 type ValidatorController struct {
 	damlClient      *client.DamlBindingClient
-	scanProxyClient *wrapper.ScanProxyClient
+	scanProxyClient *proxyClient.ScanProxyClient
 	userID          string
 	partyID         atomic.Value
 	synchronizerID  atomic.Value
 	logger          zerolog.Logger
 }
 
-func NewValidatorController(userID string, scanProxy *wrapper.ScanProxyClient, damlClient *client.DamlBindingClient) (*ValidatorController, error) {
+func NewValidatorController(userID string, scanProxy *proxyClient.ScanProxyClient, damlClient *client.DamlBindingClient) (*ValidatorController, error) {
 	logger := log.Logger.With().
 		Str("component", "validator-controller").
 		Str("userID", userID).

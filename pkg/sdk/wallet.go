@@ -6,9 +6,9 @@ import (
 
 	"github.com/noders-team/go-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
+	proxyClient "github.com/noders-team/go-wallet-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
-	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -17,7 +17,7 @@ type (
 	AuthFactory          func() auth.AuthController
 	LedgerFactory        func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error)
 	TokenStandardFactory func(userID string, damlClient *client.DamlBindingClient) (*controller.TokenStandardController, error)
-	ValidatorFactory     func(userID string, scanProxy *wrapper.ScanProxyClient, damlClient *client.DamlBindingClient) (*controller.ValidatorController, error)
+	ValidatorFactory     func(userID string, scanProxy *proxyClient.ScanProxyClient, damlClient *client.DamlBindingClient) (*controller.ValidatorController, error)
 )
 
 type Config struct {
@@ -26,7 +26,7 @@ type Config struct {
 	TokenStandardFactory TokenStandardFactory
 	ValidatorFactory     ValidatorFactory
 	DamlClient           *client.DamlBindingClient
-	ScanProxy            *wrapper.ScanProxyClient
+	ScanProxy            *proxyClient.ScanProxyClient
 }
 
 type WalletSDK struct {
@@ -37,7 +37,7 @@ type WalletSDK struct {
 	tokenStandard     *controller.TokenStandardController
 	validator         *controller.ValidatorController
 	damlClient        *client.DamlBindingClient
-	scanProxy         *wrapper.ScanProxyClient
+	scanProxy         *proxyClient.ScanProxyClient
 	logger            zerolog.Logger
 
 	authFactory          AuthFactory

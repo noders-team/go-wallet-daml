@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 
+	proxyClient "github.com/noders-team/go-wallet-daml/pkg/client"
 	"github.com/rs/zerolog/log"
 
 	"github.com/noders-team/go-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/sdk"
-	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 )
 
 func main() {
@@ -35,7 +35,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to build DAML client")
 	}
 
-	scanProxy := wrapper.NewScanProxyClient("http://localhost:5003", authProvider, false)
+	scanProxy := proxyClient.NewScanProxyClient("http://localhost:5003", authProvider, false)
 
 	walletSDK.Configure(sdk.Config{
 		AuthFactory: func() auth.AuthController {
@@ -53,7 +53,7 @@ func main() {
 		TokenStandardFactory: func(userID string, dc *client.DamlBindingClient) (*controller.TokenStandardController, error) {
 			return controller.NewTokenStandardController(userID, dc)
 		},
-		ValidatorFactory: func(userID string, sp *wrapper.ScanProxyClient, dc *client.DamlBindingClient) (*controller.ValidatorController, error) {
+		ValidatorFactory: func(userID string, sp *proxyClient.ScanProxyClient, dc *client.DamlBindingClient) (*controller.ValidatorController, error) {
 			return controller.NewValidatorController(userID, sp, dc)
 		},
 		DamlClient: damlCl,

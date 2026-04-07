@@ -1,4 +1,4 @@
-package wrapper
+package client
 
 import (
 	"bytes"
@@ -30,25 +30,33 @@ type ScanProxyClient struct {
 }
 
 type Contract struct {
-	ContractID string                 `json:"contract_id"`
-	TemplateID string                 `json:"template_id"`
-	Payload    map[string]interface{} `json:"payload"`
+	ContractID       string                 `json:"contract_id"`
+	TemplateID       string                 `json:"template_id"`
+	Payload          map[string]interface{} `json:"payload"`
+	CreatedEventBlob string                 `json:"created_event_blob,omitempty"`
+	CreatedAt        string                 `json:"created_at,omitempty"`
+}
+
+type ContractEntry struct {
+	Contract *Contract `json:"contract"`
+	DomainID string    `json:"domain_id"`
 }
 
 type AmuletRulesResponse struct {
-	AmuletRules *Contract `json:"amulet_rules"`
+	AmuletRules *ContractEntry `json:"amulet_rules"`
 }
 
 type OpenMiningRoundsResponse struct {
-	OpenRounds []Contract `json:"open_rounds"`
+	OpenRounds    []ContractEntry `json:"open_mining_rounds"`
+	IssuingRounds []ContractEntry `json:"issuing_mining_rounds"`
 }
 
 type TransferPreapprovalResponse struct {
-	TransferPreapproval *Contract `json:"transfer_preapproval"`
+	TransferPreapproval *ContractEntry `json:"transfer_preapproval"`
 }
 
 type FeaturedAppResponse struct {
-	FeaturedAppRight *Contract `json:"featured_app_right"`
+	FeaturedAppRight *ContractEntry `json:"featured_app_right"`
 }
 
 type DSOPartyIDResponse struct {
@@ -56,15 +64,15 @@ type DSOPartyIDResponse struct {
 }
 
 type DSOResponse struct {
-	DSO *Contract `json:"dso"`
+	DSO *ContractEntry `json:"dso"`
 }
 
 type ANSEntryResponse struct {
-	ANSEntry *Contract `json:"ans_entry"`
+	ANSEntry *ContractEntry `json:"ans_entry"`
 }
 
 type ANSEntriesResponse struct {
-	ANSEntries []Contract `json:"ans_entries"`
+	ANSEntries []ContractEntry `json:"ans_entries"`
 }
 
 type TransferCommandCounterResponse struct {
@@ -72,7 +80,7 @@ type TransferCommandCounterResponse struct {
 }
 
 type ANSRulesResponse struct {
-	ANSRules *Contract `json:"ans_rules"`
+	ANSRules *ContractEntry `json:"ans_rules"`
 }
 
 func NewScanProxyClient(baseURL string, provider *auth.AuthTokenProvider, isAdmin bool) *ScanProxyClient {
@@ -216,18 +224,19 @@ func (s *ScanProxyClient) GetAmuletRules(ctx context.Context) (*Contract, error)
 		return nil, fmt.Errorf("failed to get amulet rules: %w", err)
 	}
 
-	if resp.AmuletRules == nil {
+	if resp.AmuletRules == nil || resp.AmuletRules.Contract == nil {
 		return nil, fmt.Errorf("amulet rules not found in response")
 	}
 
-	if resp.AmuletRules.ContractID == "" || resp.AmuletRules.TemplateID == "" {
+	contract := resp.AmuletRules.Contract
+	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid amulet rules contract structure")
 	}
 
-	s.amuletRulesCache.Store(cacheKey, resp.AmuletRules)
+	s.amuletRulesCache.Store(cacheKey, contract)
 	s.logger.Debug().Msg("Cached amulet rules")
 
-	return resp.AmuletRules, nil
+	return contract, nil
 }
 
 func (s *ScanProxyClient) GetAmuletSynchronizerID(ctx context.Context) (string, error) {
@@ -243,14 +252,14 @@ func (s *ScanProxyClient) GetAmuletSynchronizerID(ctx context.Context) (string, 
 	return "", fmt.Errorf("synchronizerId not found in amulet rules")
 }
 
-func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]Contract, error) {
+func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]*Contract, error) {
 	cacheKey := s.baseURL
 
 	if cached, ok := s.roundsCache.Load(cacheKey); ok {
 		if nextChange, ok := s.roundsNextChangeAt.Load(cacheKey); ok {
 			if time.Now().UnixMilli() < nextChange.(int64) {
 				s.logger.Debug().Msg("Returning cached mining rounds")
-				return cached.([]Contract), nil
+				return cached.([]*Contract), nil
 			}
 		}
 	}
@@ -260,7 +269,7 @@ func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]Contract, 
 		<-inflight.(chan struct{})
 
 		if cached, ok := s.roundsCache.Load(cacheKey); ok {
-			return cached.([]Contract), nil
+			return cached.([]*Contract), nil
 		}
 		return nil, fmt.Errorf("in-flight request failed")
 	}
@@ -277,18 +286,21 @@ func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]Contract, 
 		return nil, fmt.Errorf("failed to get open mining rounds: %w", err)
 	}
 
+	contracts := make([]*Contract, 0, len(resp.OpenRounds))
 	for i := range resp.OpenRounds {
-		if resp.OpenRounds[i].ContractID == "" || resp.OpenRounds[i].TemplateID == "" {
+		c := resp.OpenRounds[i].Contract
+		if c == nil || c.ContractID == "" || c.TemplateID == "" {
 			return nil, fmt.Errorf("invalid mining round contract structure at index %d", i)
 		}
+		contracts = append(contracts, c)
 	}
 
-	nextChange := calculateNextRoundChange(resp.OpenRounds)
-	s.roundsCache.Store(cacheKey, resp.OpenRounds)
+	nextChange := calculateNextRoundChange(contracts)
+	s.roundsCache.Store(cacheKey, contracts)
 	s.roundsNextChangeAt.Store(cacheKey, nextChange)
-	s.logger.Debug().Int("count", len(resp.OpenRounds)).Msg("Cached mining rounds")
+	s.logger.Debug().Int("count", len(contracts)).Msg("Cached mining rounds")
 
-	return resp.OpenRounds, nil
+	return contracts, nil
 }
 
 func (s *ScanProxyClient) GetActiveOpenMiningRound(ctx context.Context) (*Contract, error) {
@@ -298,8 +310,8 @@ func (s *ScanProxyClient) GetActiveOpenMiningRound(ctx context.Context) (*Contra
 	}
 
 	now := time.Now()
-	for i := range rounds {
-		payload := rounds[i].Payload
+	for _, round := range rounds {
+		payload := round.Payload
 
 		if opensAtStr, ok := payload["opensAt"].(string); ok {
 			opensAt, err := time.Parse(time.RFC3339, opensAtStr)
@@ -314,7 +326,7 @@ func (s *ScanProxyClient) GetActiveOpenMiningRound(ctx context.Context) (*Contra
 				}
 
 				if now.After(opensAt) && now.Before(targetClosesAt) {
-					return &rounds[i], nil
+					return round, nil
 				}
 			}
 		}
@@ -331,15 +343,16 @@ func (s *ScanProxyClient) GetTransferPreApprovalByParty(ctx context.Context, par
 		return nil, fmt.Errorf("failed to get transfer preapproval: %w", err)
 	}
 
-	if resp.TransferPreapproval == nil {
+	if resp.TransferPreapproval == nil || resp.TransferPreapproval.Contract == nil {
 		return nil, nil
 	}
 
-	if resp.TransferPreapproval.ContractID == "" || resp.TransferPreapproval.TemplateID == "" {
+	contract := resp.TransferPreapproval.Contract
+	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid transfer preapproval contract structure")
 	}
 
-	return resp.TransferPreapproval, nil
+	return contract, nil
 }
 
 func (s *ScanProxyClient) GetFeaturedAppByProvider(ctx context.Context, providerParty model.PartyID) (*Contract, error) {
@@ -350,15 +363,16 @@ func (s *ScanProxyClient) GetFeaturedAppByProvider(ctx context.Context, provider
 		return nil, fmt.Errorf("failed to get featured app: %w", err)
 	}
 
-	if resp.FeaturedAppRight == nil {
+	if resp.FeaturedAppRight == nil || resp.FeaturedAppRight.Contract == nil {
 		return nil, nil
 	}
 
-	if resp.FeaturedAppRight.ContractID == "" || resp.FeaturedAppRight.TemplateID == "" {
+	contract := resp.FeaturedAppRight.Contract
+	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid featured app contract structure")
 	}
 
-	return resp.FeaturedAppRight, nil
+	return contract, nil
 }
 
 func (s *ScanProxyClient) GetDSOPartyID(ctx context.Context) (string, error) {
@@ -393,15 +407,16 @@ func (s *ScanProxyClient) GetDSO(ctx context.Context) (*Contract, error) {
 		return nil, fmt.Errorf("failed to get DSO: %w", err)
 	}
 
-	if resp.DSO == nil {
+	if resp.DSO == nil || resp.DSO.Contract == nil {
 		return nil, fmt.Errorf("DSO not found in response")
 	}
 
-	if resp.DSO.ContractID == "" || resp.DSO.TemplateID == "" {
+	contract := resp.DSO.Contract
+	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid DSO contract structure")
 	}
 
-	return resp.DSO, nil
+	return contract, nil
 }
 
 func (s *ScanProxyClient) GetANSEntryByParty(ctx context.Context, party model.PartyID) (*Contract, error) {
@@ -412,30 +427,34 @@ func (s *ScanProxyClient) GetANSEntryByParty(ctx context.Context, party model.Pa
 		return nil, fmt.Errorf("failed to get ANS entry by party: %w", err)
 	}
 
-	if resp.ANSEntry == nil {
+	if resp.ANSEntry == nil || resp.ANSEntry.Contract == nil {
 		return nil, nil
 	}
 
-	if resp.ANSEntry.ContractID == "" || resp.ANSEntry.TemplateID == "" {
+	contract := resp.ANSEntry.Contract
+	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid ANS entry contract structure")
 	}
 
-	return resp.ANSEntry, nil
+	return contract, nil
 }
 
-func (s *ScanProxyClient) ListANSEntries(ctx context.Context) ([]Contract, error) {
+func (s *ScanProxyClient) ListANSEntries(ctx context.Context) ([]*Contract, error) {
 	var resp ANSEntriesResponse
 	if err := s.get(ctx, "/v0/scan-proxy/ans-entries", &resp); err != nil {
 		return nil, fmt.Errorf("failed to list ANS entries: %w", err)
 	}
 
+	contracts := make([]*Contract, 0, len(resp.ANSEntries))
 	for i := range resp.ANSEntries {
-		if resp.ANSEntries[i].ContractID == "" || resp.ANSEntries[i].TemplateID == "" {
+		c := resp.ANSEntries[i].Contract
+		if c == nil || c.ContractID == "" || c.TemplateID == "" {
 			return nil, fmt.Errorf("invalid ANS entry contract structure at index %d", i)
 		}
+		contracts = append(contracts, c)
 	}
 
-	return resp.ANSEntries, nil
+	return contracts, nil
 }
 
 func (s *ScanProxyClient) GetANSEntryByName(ctx context.Context, name string) (*Contract, error) {
@@ -446,15 +465,16 @@ func (s *ScanProxyClient) GetANSEntryByName(ctx context.Context, name string) (*
 		return nil, fmt.Errorf("failed to get ANS entry by name: %w", err)
 	}
 
-	if resp.ANSEntry == nil {
+	if resp.ANSEntry == nil || resp.ANSEntry.Contract == nil {
 		return nil, nil
 	}
 
-	if resp.ANSEntry.ContractID == "" || resp.ANSEntry.TemplateID == "" {
+	contract := resp.ANSEntry.Contract
+	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid ANS entry contract structure")
 	}
 
-	return resp.ANSEntry, nil
+	return contract, nil
 }
 
 func (s *ScanProxyClient) GetTransferCommandCounter(ctx context.Context, party model.PartyID) (int64, error) {
@@ -474,18 +494,19 @@ func (s *ScanProxyClient) GetANSRules(ctx context.Context) (*Contract, error) {
 		return nil, fmt.Errorf("failed to get ANS rules: %w", err)
 	}
 
-	if resp.ANSRules == nil {
+	if resp.ANSRules == nil || resp.ANSRules.Contract == nil {
 		return nil, fmt.Errorf("ANS rules not found in response")
 	}
 
-	if resp.ANSRules.ContractID == "" || resp.ANSRules.TemplateID == "" {
+	contract := resp.ANSRules.Contract
+	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid ANS rules contract structure")
 	}
 
-	return resp.ANSRules, nil
+	return contract, nil
 }
 
-func calculateNextRoundChange(rounds []Contract) int64 {
+func calculateNextRoundChange(rounds []*Contract) int64 {
 	if len(rounds) == 0 {
 		return time.Now().Add(5 * time.Minute).UnixMilli()
 	}

@@ -12,12 +12,12 @@ import (
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
+	proxyClient "github.com/noders-team/go-wallet-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/crypto"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/sdk"
 	"github.com/noders-team/go-wallet-daml/pkg/testutil"
-	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -110,7 +110,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	damlCl, err := client.NewDamlClient("", grpcAddr).Build(ctx)
 	require.NoError(t, err)
 
-	scanProxy := wrapper.NewScanProxyClient(scanProxyURL, authProvider, false)
+	scanProxy := proxyClient.NewScanProxyClient(scanProxyURL, authProvider, false)
 
 	walletSDK.Configure(sdk.Config{
 		AuthFactory: func() auth.AuthController {
@@ -128,7 +128,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 		TokenStandardFactory: func(userID string, dc *client.DamlBindingClient) (*controller.TokenStandardController, error) {
 			return controller.NewTokenStandardController(userID, dc)
 		},
-		ValidatorFactory: func(userID string, sp *wrapper.ScanProxyClient, dc *client.DamlBindingClient) (*controller.ValidatorController, error) {
+		ValidatorFactory: func(userID string, sp *proxyClient.ScanProxyClient, dc *client.DamlBindingClient) (*controller.ValidatorController, error) {
 			return controller.NewValidatorController(userID, sp, dc)
 		},
 		DamlClient: damlCl,
