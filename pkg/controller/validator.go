@@ -8,7 +8,6 @@ import (
 
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
-	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/rs/zerolog"
@@ -24,38 +23,15 @@ type ValidatorController struct {
 	logger          zerolog.Logger
 }
 
-func NewValidatorController(userID string, grpcAddress string, scanProxyBaseURL string, provider *auth.AuthTokenProvider) (*ValidatorController, error) {
+func NewValidatorController(userID string, scanProxy *wrapper.ScanProxyClient, damlClient *client.DamlBindingClient) (*ValidatorController, error) {
 	logger := log.Logger.With().
 		Str("component", "validator-controller").
 		Str("userID", userID).
 		Logger()
 
-	tokenProviderFunc := func() (string, error) {
-		ctx := context.Background()
-		return provider.GetUserAccessToken(ctx)
-	}
-
-	damlConfig := &client.Config{
-		Address: grpcAddress,
-		TLS:     nil,
-		Auth: &client.AuthConfig{
-			TokenProvider: tokenProviderFunc,
-		},
-	}
-
-	damlCl := client.NewClient(damlConfig)
-
-	ctx := context.Background()
-	conn, err := damlCl.Connect(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to DAML ledger: %w", err)
-	}
-
-	scanProxyClient := wrapper.NewScanProxyClient(scanProxyBaseURL, provider, false)
-
 	return &ValidatorController{
-		damlClient:      client.NewDamlBindingClient(&client.DamlClient{}, conn),
-		scanProxyClient: scanProxyClient,
+		damlClient:      damlClient,
+		scanProxyClient: scanProxy,
 		userID:          userID,
 		logger:          logger,
 	}, nil

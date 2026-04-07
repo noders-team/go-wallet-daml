@@ -11,7 +11,6 @@ import (
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-daml/pkg/types"
-	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -45,35 +44,14 @@ type TokenStandardController struct {
 	logger                     zerolog.Logger
 }
 
-func NewTokenStandardController(userID string, grpcAddress string, provider *auth.AuthTokenProvider) (*TokenStandardController, error) {
+func NewTokenStandardController(userID string, damlClient *client.DamlBindingClient) (*TokenStandardController, error) {
 	logger := log.Logger.With().
 		Str("component", "token-standard-controller").
 		Str("userID", userID).
 		Logger()
 
-	tokenProviderFunc := func() (string, error) {
-		ctx := context.Background()
-		return provider.GetUserAccessToken(ctx)
-	}
-
-	damlConfig := &client.Config{
-		Address: grpcAddress,
-		TLS:     nil,
-		Auth: &client.AuthConfig{
-			TokenProvider: tokenProviderFunc,
-		},
-	}
-
-	damlCl := client.NewClient(damlConfig)
-
-	ctx := context.Background()
-	conn, err := damlCl.Connect(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to DAML ledger: %w", err)
-	}
-
 	return &TokenStandardController{
-		damlClient: client.NewDamlBindingClient(&client.DamlClient{}, conn),
+		damlClient: damlClient,
 		userID:     userID,
 		logger:     logger,
 	}, nil
@@ -200,7 +178,8 @@ func (t *TokenStandardController) Transfer(ctx context.Context, receiver model.P
 }
 
 func (t *TokenStandardController) Lock(ctx context.Context,
-	amount decimal.Decimal, expiresAt time.Time) (*model.LockResponse, error) {
+	amount decimal.Decimal, expiresAt time.Time,
+) (*model.LockResponse, error) {
 	_, err := t.GetPartyID()
 	if err != nil {
 		return nil, err
@@ -875,7 +854,8 @@ func (t *TokenStandardController) ListInstruments(ctx context.Context, pageSize 
 }
 
 func (t *TokenStandardController) GetTransactionById(ctx context.Context,
-	updateId string) (*damlModel.GetUpdatesResponse, error) {
+	updateId string,
+) (*damlModel.GetUpdatesResponse, error) {
 	partyID, err := t.GetPartyID()
 	if err != nil {
 		return nil, err
@@ -886,7 +866,8 @@ func (t *TokenStandardController) GetTransactionById(ctx context.Context,
 }
 
 func (t *TokenStandardController) ListHoldingUtxo(ctx context.Context,
-	contractId string) (*model.HoldingUTXO, error) {
+	contractId string,
+) (*model.HoldingUTXO, error) {
 	utxos, err := t.ListHoldingUtxos(ctx, true, 0)
 	if err != nil {
 		return nil, err
@@ -903,7 +884,8 @@ func (t *TokenStandardController) ListHoldingUtxo(ctx context.Context,
 
 func (t *TokenStandardController) MergeHoldingUtxos(ctx context.Context,
 	nodeLimit int, partyID model.PartyID,
-	inputUtxos []*model.HoldingUTXO) (*model.MergeUtxosResult, error) {
+	inputUtxos []*model.HoldingUTXO,
+) (*model.MergeUtxosResult, error) {
 	if partyID == "" {
 		var err error
 		partyID, err = t.GetPartyID()

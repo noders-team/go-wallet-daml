@@ -17,6 +17,7 @@ import (
 	"github.com/noders-team/go-wallet-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/sdk"
 	"github.com/noders-team/go-wallet-daml/pkg/testutil"
+	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -102,9 +103,18 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	dsoPartyID := testutil.GetDsoPartyID()
 
 	walletSDK := sdk.NewWalletSDK()
+
+	authCtrl := auth.NewMockAuthController("app-provider")
+	authProvider := auth.NewAuthTokenProvider(authCtrl)
+
+	damlCl, err := client.NewDamlClient("", grpcAddr).Build(ctx)
+	require.NoError(t, err)
+
+	scanProxy := wrapper.NewScanProxyClient(scanProxyURL, authProvider, false)
+
 	walletSDK.Configure(sdk.Config{
 		AuthFactory: func() auth.AuthController {
-			return auth.NewMockAuthController("app-provider")
+			return authCtrl
 		},
 		LedgerFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error) {
 			return controller.NewLedgerController(
@@ -115,22 +125,14 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 				isAdmin,
 			)
 		},
-		TokenStandardFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error) {
-			return controller.NewTokenStandardController(
-				userID,
-				grpcAddr,
-				provider,
-				isAdmin,
-			)
+		TokenStandardFactory: func(userID string, dc *client.DamlBindingClient) (*controller.TokenStandardController, error) {
+			return controller.NewTokenStandardController(userID, dc)
 		},
-		ValidatorFactory: func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error) {
-			return controller.NewValidatorController(
-				userID,
-				grpcAddr,
-				scanProxyURL,
-				provider,
-			)
+		ValidatorFactory: func(userID string, sp *wrapper.ScanProxyClient, dc *client.DamlBindingClient) (*controller.ValidatorController, error) {
+			return controller.NewValidatorController(userID, sp, dc)
 		},
+		DamlClient: damlCl,
+		ScanProxy:  scanProxy,
 	})
 	require.NoError(t, walletSDK.Connect(ctx))
 

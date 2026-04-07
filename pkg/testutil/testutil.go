@@ -17,6 +17,7 @@ import (
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
+	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
 	"github.com/rs/zerolog/log"
@@ -162,7 +163,7 @@ func Setup(ctx context.Context) error {
 		ledgerCtrl.SetPartyID(testPartyID)
 		ledgerCtrl.SetSynchronizerID(synchronizerID)
 
-		tokenStdCtrl, err = controller.NewTokenStandardController(testUserID, grpcAddr, authProvider, false)
+		tokenStdCtrl, err = controller.NewTokenStandardController(testUserID, damlClient)
 		if err != nil {
 			setupErr = fmt.Errorf("failed to create token standard controller: %w", err)
 			return
@@ -170,7 +171,8 @@ func Setup(ctx context.Context) error {
 		tokenStdCtrl.SetPartyID(testPartyID)
 		tokenStdCtrl.SetSynchronizerID(synchronizerID)
 
-		validatorCtrl, err = controller.NewValidatorController(testUserID, grpcAddr, scanProxyBaseURL, authProvider)
+		scanProxy := wrapper.NewScanProxyClient(scanProxyBaseURL, authProvider, false)
+		validatorCtrl, err = controller.NewValidatorController(testUserID, scanProxy, damlClient)
 		if err != nil {
 			setupErr = fmt.Errorf("failed to create validator controller: %w", err)
 			return

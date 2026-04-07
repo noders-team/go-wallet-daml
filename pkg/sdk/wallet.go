@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/noders-team/go-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
+	"github.com/noders-team/go-wallet-daml/pkg/wrapper"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -14,8 +16,8 @@ import (
 type (
 	AuthFactory          func() auth.AuthController
 	LedgerFactory        func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error)
-	TokenStandardFactory func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error)
-	ValidatorFactory     func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error)
+	TokenStandardFactory func(userID string, damlClient *client.DamlBindingClient) (*controller.TokenStandardController, error)
+	ValidatorFactory     func(userID string, scanProxy *wrapper.ScanProxyClient, damlClient *client.DamlBindingClient) (*controller.ValidatorController, error)
 )
 
 type Config struct {
@@ -23,6 +25,8 @@ type Config struct {
 	LedgerFactory        LedgerFactory
 	TokenStandardFactory TokenStandardFactory
 	ValidatorFactory     ValidatorFactory
+	DamlClient           *client.DamlBindingClient
+	ScanProxy            *wrapper.ScanProxyClient
 }
 
 type WalletSDK struct {
@@ -32,6 +36,8 @@ type WalletSDK struct {
 	adminLedger       *controller.LedgerController
 	tokenStandard     *controller.TokenStandardController
 	validator         *controller.ValidatorController
+	damlClient        *client.DamlBindingClient
+	scanProxy         *wrapper.ScanProxyClient
 	logger            zerolog.Logger
 
 	authFactory          AuthFactory
@@ -63,6 +69,12 @@ func (w *WalletSDK) Configure(config Config) *WalletSDK {
 	if config.ValidatorFactory != nil {
 		w.validatorFactory = config.ValidatorFactory
 	}
+	if config.DamlClient != nil {
+		w.damlClient = config.DamlClient
+	}
+	if config.ScanProxy != nil {
+		w.scanProxy = config.ScanProxy
+	}
 	return w
 }
 
@@ -88,14 +100,14 @@ func (w *WalletSDK) Connect(ctx context.Context) error {
 	}
 
 	if w.tokenStandardFactory != nil {
-		w.tokenStandard, err = w.tokenStandardFactory(authCtx.UserID, w.authTokenProvider, false)
+		w.tokenStandard, err = w.tokenStandardFactory(authCtx.UserID, w.damlClient)
 		if err != nil {
 			return fmt.Errorf("failed to create token standard controller: %w", err)
 		}
 	}
 
 	if w.validatorFactory != nil {
-		w.validator, err = w.validatorFactory(authCtx.UserID, w.authTokenProvider)
+		w.validator, err = w.validatorFactory(authCtx.UserID, w.scanProxy, w.damlClient)
 		if err != nil {
 			return fmt.Errorf("failed to create validator controller: %w", err)
 		}
