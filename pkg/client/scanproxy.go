@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
@@ -17,16 +16,11 @@ import (
 )
 
 type ScanProxyClient struct {
-	baseURL             string
-	httpClient          *http.Client
-	tokenProvider       *auth.AuthTokenProvider
-	isAdmin             bool
-	logger              zerolog.Logger
-	amuletRulesCache    sync.Map
-	roundsCache         sync.Map
-	amuletRulesInflight sync.Map
-	roundsInflight      sync.Map
-	roundsNextChangeAt  sync.Map
+	baseURL       string
+	httpClient    *http.Client
+	tokenProvider *auth.AuthTokenProvider
+	isAdmin       bool
+	logger        zerolog.Logger
 }
 
 type Contract struct {
@@ -195,30 +189,6 @@ func (s *ScanProxyClient) post(ctx context.Context, path string, body interface{
 }
 
 func (s *ScanProxyClient) GetAmuletRules(ctx context.Context) (*Contract, error) {
-	cacheKey := s.baseURL
-
-	if cached, ok := s.amuletRulesCache.Load(cacheKey); ok {
-		s.logger.Debug().Msg("Returning cached amulet rules")
-		return cached.(*Contract), nil
-	}
-
-	if inflight, loaded := s.amuletRulesInflight.LoadOrStore(cacheKey, make(chan struct{})); loaded {
-		s.logger.Debug().Msg("Waiting for in-flight amulet rules request")
-		<-inflight.(chan struct{})
-
-		if cached, ok := s.amuletRulesCache.Load(cacheKey); ok {
-			return cached.(*Contract), nil
-		}
-		return nil, fmt.Errorf("in-flight request failed")
-	}
-
-	defer func() {
-		if ch, ok := s.amuletRulesInflight.Load(cacheKey); ok {
-			close(ch.(chan struct{}))
-			s.amuletRulesInflight.Delete(cacheKey)
-		}
-	}()
-
 	var resp AmuletRulesResponse
 	if err := s.get(ctx, "/v0/scan-proxy/amulet-rules", &resp); err != nil {
 		return nil, fmt.Errorf("failed to get amulet rules: %w", err)
@@ -232,9 +202,6 @@ func (s *ScanProxyClient) GetAmuletRules(ctx context.Context) (*Contract, error)
 	if contract.ContractID == "" || contract.TemplateID == "" {
 		return nil, fmt.Errorf("invalid amulet rules contract structure")
 	}
-
-	s.amuletRulesCache.Store(cacheKey, contract)
-	s.logger.Debug().Msg("Cached amulet rules")
 
 	return contract, nil
 }
@@ -253,34 +220,6 @@ func (s *ScanProxyClient) GetAmuletSynchronizerID(ctx context.Context) (string, 
 }
 
 func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]*Contract, error) {
-	cacheKey := s.baseURL
-
-	if cached, ok := s.roundsCache.Load(cacheKey); ok {
-		if nextChange, ok := s.roundsNextChangeAt.Load(cacheKey); ok {
-			if time.Now().UnixMilli() < nextChange.(int64) {
-				s.logger.Debug().Msg("Returning cached mining rounds")
-				return cached.([]*Contract), nil
-			}
-		}
-	}
-
-	if inflight, loaded := s.roundsInflight.LoadOrStore(cacheKey, make(chan struct{})); loaded {
-		s.logger.Debug().Msg("Waiting for in-flight mining rounds request")
-		<-inflight.(chan struct{})
-
-		if cached, ok := s.roundsCache.Load(cacheKey); ok {
-			return cached.([]*Contract), nil
-		}
-		return nil, fmt.Errorf("in-flight request failed")
-	}
-
-	defer func() {
-		if ch, ok := s.roundsInflight.Load(cacheKey); ok {
-			close(ch.(chan struct{}))
-			s.roundsInflight.Delete(cacheKey)
-		}
-	}()
-
 	var resp OpenMiningRoundsResponse
 	if err := s.get(ctx, "/v0/scan-proxy/open-and-issuing-mining-rounds", &resp); err != nil {
 		return nil, fmt.Errorf("failed to get open mining rounds: %w", err)
@@ -294,11 +233,6 @@ func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]*Contract,
 		}
 		contracts = append(contracts, c)
 	}
-
-	nextChange := calculateNextRoundChange(contracts)
-	s.roundsCache.Store(cacheKey, contracts)
-	s.roundsNextChangeAt.Store(cacheKey, nextChange)
-	s.logger.Debug().Int("count", len(contracts)).Msg("Cached mining rounds")
 
 	return contracts, nil
 }
@@ -386,19 +320,6 @@ func (s *ScanProxyClient) GetDSOPartyID(ctx context.Context) (string, error) {
 	}
 
 	return resp.DSOPartyID, nil
-}
-
-func (s *ScanProxyClient) InvalidateAmuletRulesCache() {
-	cacheKey := s.baseURL
-	s.amuletRulesCache.Delete(cacheKey)
-	s.logger.Debug().Msg("Invalidated amulet rules cache")
-}
-
-func (s *ScanProxyClient) InvalidateOpenMiningRoundsCache() {
-	cacheKey := s.baseURL
-	s.roundsCache.Delete(cacheKey)
-	s.roundsNextChangeAt.Delete(cacheKey)
-	s.logger.Debug().Msg("Invalidated mining rounds cache")
 }
 
 func (s *ScanProxyClient) GetDSO(ctx context.Context) (*Contract, error) {
@@ -504,32 +425,4 @@ func (s *ScanProxyClient) GetANSRules(ctx context.Context) (*Contract, error) {
 	}
 
 	return contract, nil
-}
-
-func calculateNextRoundChange(rounds []*Contract) int64 {
-	if len(rounds) == 0 {
-		return time.Now().Add(5 * time.Minute).UnixMilli()
-	}
-
-	minChange := time.Now().Add(24 * time.Hour).UnixMilli()
-
-	for _, round := range rounds {
-		if opensAtStr, ok := round.Payload["opensAt"].(string); ok {
-			if opensAt, err := time.Parse(time.RFC3339, opensAtStr); err == nil {
-				if t := opensAt.UnixMilli(); t > time.Now().UnixMilli() && t < minChange {
-					minChange = t
-				}
-			}
-		}
-
-		if targetClosesAtStr, ok := round.Payload["targetClosesAt"].(string); ok {
-			if targetClosesAt, err := time.Parse(time.RFC3339, targetClosesAtStr); err == nil {
-				if t := targetClosesAt.UnixMilli(); t > time.Now().UnixMilli() && t < minChange {
-					minChange = t
-				}
-			}
-		}
-	}
-
-	return minChange
 }

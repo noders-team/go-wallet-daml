@@ -129,25 +129,36 @@ func TestGetOpenMiningRounds_PayloadFields(t *testing.T) {
 	require.True(t, ok, "round should contain 'number'")
 }
 
-func TestGetOpenMiningRounds_Cache(t *testing.T) {
+func TestGetAmuletRules_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	sp := newTestScanProxy(t)
 
-	rounds1, err := sp.GetOpenMiningRounds(ctx)
+	rules, err := sp.GetAmuletRules(ctx)
 	require.NoError(t, err)
-	require.NotEmpty(t, rounds1)
+	require.NotNil(t, rules)
+	require.NotEmpty(t, rules.ContractID)
+	require.NotEmpty(t, rules.TemplateID)
+	require.NotNil(t, rules.Payload)
+	require.Contains(t, rules.TemplateID, "AmuletRules")
+}
 
-	rounds2, err := sp.GetOpenMiningRounds(ctx)
+func TestGetAmuletRules_PayloadFields(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sp := newTestScanProxy(t)
+
+	rules, err := sp.GetAmuletRules(ctx)
 	require.NoError(t, err)
-	require.Equal(t, len(rounds1), len(rounds2))
-	require.Equal(t, rounds1[0].ContractID, rounds2[0].ContractID)
+	require.NotNil(t, rules)
 
-	sp.InvalidateOpenMiningRoundsCache()
+	dso, ok := rules.Payload["dso"].(string)
+	require.True(t, ok, "payload missing 'dso' string")
+	require.NotEmpty(t, dso)
+	require.Contains(t, dso, "DSO::")
 
-	rounds3, err := sp.GetOpenMiningRounds(ctx)
-	require.NoError(t, err)
-	require.NotEmpty(t, rounds3)
-	require.NotEmpty(t, rounds3[0].ContractID)
+	_, ok = rules.Payload["configSchedule"]
+	require.True(t, ok, "payload missing 'configSchedule'")
 }
