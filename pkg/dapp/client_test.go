@@ -12,6 +12,7 @@ import (
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
+	proxyClient "github.com/noders-team/go-wallet-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/controller"
 	"github.com/noders-team/go-wallet-daml/pkg/crypto"
 	"github.com/noders-team/go-wallet-daml/pkg/model"
@@ -39,9 +40,18 @@ func (s *DappClientTestSuite) SetupSuite() {
 	s.scanProxyURL = testutil.GetScanProxyBaseURL()
 
 	s.walletSDK = sdk.NewWalletSDK()
+
+	authCtrl := auth.NewMockAuthController("app-provider")
+	authProvider := auth.NewAuthTokenProvider(authCtrl)
+
+	damlCl, err := client.NewDamlClient("", s.grpcAddr).Build(s.ctx)
+	require.NoError(s.T(), err)
+
+	scanProxy := proxyClient.NewScanProxyClient(s.scanProxyURL, authProvider, false)
+
 	s.walletSDK.Configure(sdk.Config{
 		AuthFactory: func() auth.AuthController {
-			return auth.NewMockAuthController("app-provider")
+			return authCtrl
 		},
 		LedgerFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.LedgerController, error) {
 			return controller.NewLedgerController(
@@ -52,25 +62,17 @@ func (s *DappClientTestSuite) SetupSuite() {
 				isAdmin,
 			)
 		},
-		TokenStandardFactory: func(userID string, provider *auth.AuthTokenProvider, isAdmin bool) (*controller.TokenStandardController, error) {
-			return controller.NewTokenStandardController(
-				userID,
-				s.grpcAddr,
-				provider,
-				isAdmin,
-			)
+		TokenStandardFactory: func(userID string, dc *client.DamlBindingClient) (*controller.TokenStandardController, error) {
+			return controller.NewTokenStandardController(userID, dc)
 		},
-		ValidatorFactory: func(userID string, provider *auth.AuthTokenProvider) (*controller.ValidatorController, error) {
-			return controller.NewValidatorController(
-				userID,
-				s.grpcAddr,
-				s.scanProxyURL,
-				provider,
-			)
+		ValidatorFactory: func(userID string, sp *proxyClient.ScanProxyClient, dc *client.DamlBindingClient) (*controller.ValidatorController, error) {
+			return controller.NewValidatorController(userID, sp, dc)
 		},
+		DamlClient: damlCl,
+		ScanProxy:  scanProxy,
 	})
 
-	err := s.walletSDK.Connect(s.ctx)
+	err = s.walletSDK.Connect(s.ctx)
 	require.NoError(s.T(), err)
 
 	s.dappClient = NewDappClient(s.walletSDK, s.scanProxyURL)
@@ -455,7 +457,7 @@ func (s *DappClientTestSuite) grantUserRights(ctx context.Context, cl *client.Da
 	return err
 }
 
-func (s *DappClientTestSuite) mintAndAwaitHoldings(ctx context.Context, dsoPartyID, synchronizerID model.PartyID, retries int, delay time.Duration) ([]*controller.HoldingUTXO, error) {
+func (s *DappClientTestSuite) mintAndAwaitHoldings(ctx context.Context, dsoPartyID, synchronizerID model.PartyID, retries int, delay time.Duration) ([]*model.HoldingUTXO, error) {
 	s.walletSDK.TokenStandard().SetPartyID(dsoPartyID)
 	s.walletSDK.TokenStandard().SetSynchronizerID(synchronizerID)
 
