@@ -74,7 +74,7 @@ type TransferCommandCounterResponse struct {
 }
 
 type ANSRulesResponse struct {
-	ANSRules *ContractEntry `json:"ans_rules"`
+	ANSRules *ContractEntry `json:"ans_rules_update"`
 }
 
 func NewScanProxyClient(baseURL string, provider *auth.AuthTokenProvider, isAdmin bool) *ScanProxyClient {
@@ -219,22 +219,62 @@ func (s *ScanProxyClient) GetAmuletSynchronizerID(ctx context.Context) (string, 
 	return "", fmt.Errorf("synchronizerId not found in amulet rules")
 }
 
-func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]*Contract, error) {
+func (s *ScanProxyClient) getOpenAndIssuingRounds(ctx context.Context) (*OpenMiningRoundsResponse, error) {
 	var resp OpenMiningRoundsResponse
 	if err := s.get(ctx, "/v0/scan-proxy/open-and-issuing-mining-rounds", &resp); err != nil {
-		return nil, fmt.Errorf("failed to get open mining rounds: %w", err)
+		return nil, fmt.Errorf("failed to get mining rounds: %w", err)
 	}
+	return &resp, nil
+}
 
-	contracts := make([]*Contract, 0, len(resp.OpenRounds))
-	for i := range resp.OpenRounds {
-		c := resp.OpenRounds[i].Contract
+func unwrapEntries(entries []ContractEntry) ([]*Contract, error) {
+	contracts := make([]*Contract, 0, len(entries))
+	for i := range entries {
+		c := entries[i].Contract
 		if c == nil || c.ContractID == "" || c.TemplateID == "" {
 			return nil, fmt.Errorf("invalid mining round contract structure at index %d", i)
 		}
 		contracts = append(contracts, c)
 	}
-
 	return contracts, nil
+}
+
+func (s *ScanProxyClient) GetOpenMiningRounds(ctx context.Context) ([]*Contract, error) {
+	resp, err := s.getOpenAndIssuingRounds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return unwrapEntries(resp.OpenRounds)
+}
+
+func (s *ScanProxyClient) GetIssuingMiningRounds(ctx context.Context) ([]*Contract, error) {
+	resp, err := s.getOpenAndIssuingRounds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return unwrapEntries(resp.IssuingRounds)
+}
+
+func (s *ScanProxyClient) GetClosedMiningRounds(ctx context.Context) ([]*Contract, error) {
+	rounds, err := s.GetOpenMiningRounds(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	closed := make([]*Contract, 0)
+	for _, r := range rounds {
+		if closesStr, ok := r.Payload["targetClosesAt"].(string); ok {
+			closesAt, err := time.Parse(time.RFC3339, closesStr)
+			if err != nil {
+				continue
+			}
+			if now.After(closesAt) {
+				closed = append(closed, r)
+			}
+		}
+	}
+	return closed, nil
 }
 
 func (s *ScanProxyClient) GetActiveOpenMiningRound(ctx context.Context) (*Contract, error) {
@@ -362,7 +402,7 @@ func (s *ScanProxyClient) GetANSEntryByParty(ctx context.Context, party model.Pa
 
 func (s *ScanProxyClient) ListANSEntries(ctx context.Context) ([]*Contract, error) {
 	var resp ANSEntriesResponse
-	if err := s.get(ctx, "/v0/scan-proxy/ans-entries", &resp); err != nil {
+	if err := s.get(ctx, "/v0/scan-proxy/ans-entries?page_size=100", &resp); err != nil {
 		return nil, fmt.Errorf("failed to list ANS entries: %w", err)
 	}
 
@@ -411,7 +451,7 @@ func (s *ScanProxyClient) GetTransferCommandCounter(ctx context.Context, party m
 
 func (s *ScanProxyClient) GetANSRules(ctx context.Context) (*Contract, error) {
 	var resp ANSRulesResponse
-	if err := s.post(ctx, "/v0/scan-proxy/ans-rules", nil, &resp); err != nil {
+	if err := s.post(ctx, "/v0/scan-proxy/ans-rules", struct{}{}, &resp); err != nil {
 		return nil, fmt.Errorf("failed to get ANS rules: %w", err)
 	}
 
