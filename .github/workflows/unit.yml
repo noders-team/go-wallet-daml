@@ -26,15 +26,17 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            // role_name distinguishes admin / maintain / write / triage / read,
+            // unlike the legacy `permission` field which collapses admin+maintain to "admin".
             const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
               owner: context.repo.owner,
               repo: context.repo.repo,
               username: context.payload.sender.login,
             });
-            if (perm.permission !== 'admin') {
+            if (perm.role_name !== 'admin') {
               core.setFailed(
                 `Only repository admins can trigger unit tests. ` +
-                `User '${context.payload.sender.login}' has '${perm.permission}'.`
+                `User '${context.payload.sender.login}' has role '${perm.role_name}'.`
               );
             }
 
