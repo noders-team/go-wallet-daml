@@ -64,6 +64,13 @@ test:
 	@echo "Running tests..."
 	$(GOTEST) -v ./...
 
+# Smoke: minimal build sanity used by CI.
+.PHONY: smoke
+smoke:
+	@echo "Smoke: go build ./..."
+	$(GOBUILD) ./...
+	@echo "Smoke: OK"
+
 # Run tests with coverage
 .PHONY: test-coverage
 test-coverage:
