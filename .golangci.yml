@@ -1,0 +1,37 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - misspell
+    - unconvert
+  settings:
+    staticcheck:
+      checks:
+        - SA*
+  exclusions:
+    paths:
+      - examples
+      - pkg/testutil
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    paths:
+      - examples
+      - pkg/testutil
