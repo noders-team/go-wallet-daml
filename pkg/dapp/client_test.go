@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	damlauth "github.com/noders-team/go-daml/pkg/auth"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
@@ -44,7 +45,7 @@ func (s *DappClientTestSuite) SetupSuite() {
 	authCtrl := auth.NewMockAuthController("app-provider")
 	authProvider := auth.NewAuthTokenProvider(authCtrl)
 
-	damlCl, err := client.NewDamlClient("", s.grpcAddr).Build(s.ctx)
+	damlCl, err := client.NewDamlClient(s.grpcAddr, damlauth.NewBearerTokenProvider("")).Build(s.ctx)
 	require.NoError(s.T(), err)
 
 	scanProxy := proxyClient.NewScanProxyClient(s.scanProxyURL, authProvider, false)

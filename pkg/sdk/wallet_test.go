@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	damlauth "github.com/noders-team/go-daml/pkg/auth"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
@@ -107,7 +108,7 @@ func TestExternalPartyWalletWithMintAndTransfer(t *testing.T) {
 	authCtrl := auth.NewMockAuthController("app-provider")
 	authProvider := auth.NewAuthTokenProvider(authCtrl)
 
-	damlCl, err := client.NewDamlClient("", grpcAddr).Build(ctx)
+	damlCl, err := client.NewDamlClient(grpcAddr, damlauth.NewBearerTokenProvider("")).Build(ctx)
 	require.NoError(t, err)
 
 	scanProxy := proxyClient.NewScanProxyClient(scanProxyURL, authProvider, false)
