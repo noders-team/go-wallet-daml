@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	damlauth "github.com/noders-team/go-daml/pkg/auth"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-daml/pkg/types"
@@ -118,14 +119,13 @@ func (b *LedgerControllerBuilder) Build(ctx context.Context) (*LedgerController,
 		GRPCDialOptions: b.dialOptions,
 	}
 	if b.token != nil {
-		damlConfig.Auth = &client.AuthConfig{Token: *b.token}
+		damlConfig.Auth = &client.AuthConfig{TokenProvider: damlauth.NewBearerTokenProvider(*b.token)}
 	} else {
-		tokenProviderFunc := func() (string, error) {
-			ctx := context.Background()
-			return b.provider.GetUserAccessToken(ctx)
+		token, err := b.provider.GetUserAccessToken(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get user access token: %w", err)
 		}
-
-		damlConfig.Auth = &client.AuthConfig{TokenProvider: tokenProviderFunc}
+		damlConfig.Auth = &client.AuthConfig{TokenProvider: damlauth.NewBearerTokenProvider(token)}
 	}
 
 	damlCl := client.NewClient(damlConfig)

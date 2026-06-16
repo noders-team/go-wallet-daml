@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	damlauth "github.com/noders-team/go-daml/pkg/auth"
 	"github.com/noders-team/go-daml/pkg/client"
 	"github.com/noders-team/go-wallet-daml/pkg/auth"
 	proxyClient "github.com/noders-team/go-wallet-daml/pkg/client"
@@ -34,7 +35,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to get access token")
 	}
 
-	damlCl, err := client.NewDamlClient(token, "localhost:5003").Build(ctx)
+	damlCl, err := client.NewDamlClient("localhost:5003", damlauth.NewBearerTokenProvider(token)).Build(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to build DAML client")
 	}
