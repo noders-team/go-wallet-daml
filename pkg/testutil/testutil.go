@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	damlauth "github.com/noders-team/go-daml/pkg/auth"
 	"github.com/noders-team/go-daml/pkg/client"
 	damlModel "github.com/noders-team/go-daml/pkg/model"
 	"github.com/noders-team/go-daml/pkg/types"
@@ -70,7 +71,7 @@ func Setup(ctx context.Context) error {
 
 		resDaml, grpcAddr, adminAddr = initDamlSandbox(ctx, dockerPool)
 
-		builder := client.NewDamlClient("", grpcAddr).WithAdminAddress(adminAddr)
+		builder := client.NewDamlClient(grpcAddr, damlauth.NewBearerTokenProvider("")).WithAdminAddress(adminAddr)
 		if strings.HasSuffix(grpcAddr, ":443") {
 			tlsConfig := client.TlsConfig{}
 			builder = builder.WithTLSConfig(tlsConfig)
